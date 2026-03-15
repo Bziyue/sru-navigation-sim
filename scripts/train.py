@@ -29,6 +29,7 @@ Logs saved to: logs/rsl_rl/<experiment_name>/<timestamp>/
 from __future__ import annotations
 
 import argparse
+import pickle
 import sys
 
 # Add the parent directory to the path so we can import from the extension
@@ -71,7 +72,7 @@ import isaaclab_nav_task  # noqa: F401
 
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.utils.dict import print_dict
-from isaaclab.utils.io import dump_pickle, dump_yaml
+from isaaclab.utils.io import dump_yaml
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
@@ -81,6 +82,15 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
+
+
+def dump_pickle_file(filename: str, data):
+    """Persist configs for later replay/debugging on IsaacLab versions without dump_pickle."""
+    directory = os.path.dirname(filename)
+    if directory and not os.path.exists(directory):
+        os.makedirs(directory, exist_ok=True)
+    with open(filename, "wb") as f:
+        pickle.dump(data, f)
 
 
 def main():
@@ -121,8 +131,8 @@ def main():
     # Save configuration
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
-    dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
-    dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
+    dump_pickle_file(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
+    dump_pickle_file(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
 
     # Run training
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)

@@ -32,3 +32,11 @@ class RobotNavigationGoalCommandCfg(CommandTermCfg):
     robot_to_goal_line_vis: bool = True
     """If true, visualize the line from the robot to the goal."""
 
+    position_table_device: str = "auto"
+    """Device for goal/spawn position-table precomputation.
+
+    Supported values:
+    - ``"auto"``: use the environment device
+    - ``"cpu"``: precompute tables on CPU to save GPU memory
+    - any explicit torch device string such as ``"cuda:0"``
+    """
