@@ -239,7 +239,8 @@ def _build_region_point_sets(
 def _sample_quintic_centerline(
     breakpoints: list[float],
     coefficients: list[list[float]],
-    sample_dt: float,
+    eval_dt: float,
+    arc_length_spacing: float,
     flight_height: float,
 ) -> np.ndarray:
     num_segments = len(breakpoints) - 1
@@ -258,7 +259,7 @@ def _sample_quintic_centerline(
         if duration <= 0.0:
             continue
 
-        local_times = np.arange(0.0, duration, sample_dt, dtype=np.float32)
+        local_times = np.arange(0.0, duration, eval_dt, dtype=np.float32)
         if seg_idx == num_segments - 1 or len(local_times) == 0 or not np.isclose(local_times[-1], duration):
             local_times = np.concatenate([local_times, np.asarray([duration], dtype=np.float32)])
 
@@ -269,19 +270,44 @@ def _sample_quintic_centerline(
     if not sampled_points:
         raise ValueError("Failed to sample any points from trajectory coefficients.")
 
-    centerline = np.concatenate(sampled_points, axis=0)
-    centerline[:, 2] = flight_height
-    _, unique_indices = np.unique(np.round(centerline[:, :2], decimals=4), axis=0, return_index=True)
-    centerline = centerline[np.sort(unique_indices)]
-    if len(centerline) < 2:
+    dense_centerline = np.concatenate(sampled_points, axis=0)
+    dense_centerline[:, 2] = flight_height
+    _, unique_indices = np.unique(np.round(dense_centerline[:, :2], decimals=4), axis=0, return_index=True)
+    dense_centerline = dense_centerline[np.sort(unique_indices)]
+    if len(dense_centerline) < 2:
         raise ValueError("Sampled trajectory centerline must contain at least two distinct points.")
-    return centerline.astype(np.float32, copy=False)
+
+    segment_vectors = np.diff(dense_centerline[:, :2], axis=0)
+    segment_lengths = np.linalg.norm(segment_vectors, axis=1)
+    cumulative_lengths = np.concatenate(
+        [np.zeros(1, dtype=np.float32), np.cumsum(segment_lengths, dtype=np.float32)],
+        axis=0,
+    )
+    total_length = float(cumulative_lengths[-1])
+    if total_length <= 1e-6:
+        raise ValueError("Trajectory centerline length is too small after dense sampling.")
+
+    sample_arcs = np.arange(0.0, total_length, arc_length_spacing, dtype=np.float32)
+    if len(sample_arcs) == 0 or not np.isclose(sample_arcs[-1], total_length):
+        sample_arcs = np.concatenate([sample_arcs, np.asarray([total_length], dtype=np.float32)])
+
+    resampled_xy = np.column_stack(
+        [
+            np.interp(sample_arcs, cumulative_lengths, dense_centerline[:, axis]).astype(np.float32, copy=False)
+            for axis in range(2)
+        ]
+    ).astype(np.float32, copy=False)
+    centerline = np.zeros((len(resampled_xy), 3), dtype=np.float32)
+    centerline[:, :2] = resampled_xy
+    centerline[:, 2] = flight_height
+    return centerline
 
 
 def _load_guidance_centerlines(
     guidance_trajectories_data_path: str,
     flight_height: float,
-    sample_dt: float,
+    eval_dt: float,
+    arc_length_spacing: float,
     num_regions: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     with open(guidance_trajectories_data_path, "r", encoding="utf-8") as f:
@@ -306,7 +332,8 @@ def _load_guidance_centerlines(
         centerline = _sample_quintic_centerline(
             breakpoints=list(trajectory["breakpoints"]),
             coefficients=list(trajectory["coefficients"]),
-            sample_dt=sample_dt,
+            eval_dt=eval_dt,
+            arc_length_spacing=arc_length_spacing,
             flight_height=flight_height,
         )
         segment_lengths = np.linalg.norm(np.diff(centerline[:, :2], axis=0), axis=1)
@@ -386,7 +413,8 @@ class StaticRegionGoalCommand(CommandTerm):
         ]
         self.flight_height = float(cfg.flight_height)
         self.visualize_region_boxes = bool(cfg.visualize_region_boxes)
-        self.guidance_sample_dt = float(cfg.guidance_trajectory_sample_dt)
+        self.guidance_eval_dt = float(cfg.guidance_trajectory_eval_dt)
+        self.guidance_arc_length_spacing = float(cfg.guidance_arc_length_spacing)
 
         if cfg.guidance_trajectories_data_path is None:
             raise ValueError("guidance_trajectories_data_path must be provided for static region guidance.")
@@ -398,7 +426,8 @@ class StaticRegionGoalCommand(CommandTerm):
         ) = _load_guidance_centerlines(
             guidance_trajectories_data_path=cfg.guidance_trajectories_data_path,
             flight_height=self.flight_height,
-            sample_dt=self.guidance_sample_dt,
+            eval_dt=self.guidance_eval_dt,
+            arc_length_spacing=self.guidance_arc_length_spacing,
             num_regions=len(region_point_sets),
         )
         self.guidance_paths_xy = guidance_paths_xy.to(self.device)
