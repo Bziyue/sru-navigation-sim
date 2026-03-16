@@ -405,6 +405,14 @@ class StaticRegionGoalCommand(CommandTerm):
         self.guidance_arc_lengths = guidance_arc_lengths.to(self.device)
         self.guidance_path_lengths = guidance_path_lengths.to(self.device)
         self.guidance_pair_ids = guidance_pair_ids.to(self.device)
+        self.num_precomputed_guidance_paths = int(self.guidance_pair_ids.shape[0])
+        self.num_precomputed_region_pairs = self.num_precomputed_guidance_paths // 2
+        print(
+            "[StaticRegionGoalCommand] Precomputed "
+            f"{self.num_precomputed_guidance_paths} directed guidance trajectories "
+            f"({self.num_precomputed_region_pairs} undirected region pairs). "
+            "These centerlines are loaded once at initialization and reused by indexing during training."
+        )
         self.region_safe_points_vis, self.region_safe_points_vis_indices = self._build_region_safe_points_vis(
             all_regions=region_point_sets,
             points_per_region=int(cfg.region_safe_points_vis_points_per_region),
@@ -448,6 +456,8 @@ class StaticRegionGoalCommand(CommandTerm):
         self.metrics["velocity_toward_goal"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["velocity_magnitude"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["success_rate"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["active_guidance_assignments"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["active_guidance_unique"] = torch.zeros(self.num_envs, device=self.device)
 
     def _build_region_safe_points_vis(
         self,
@@ -566,6 +576,10 @@ class StaticRegionGoalCommand(CommandTerm):
         direction_to_goal = position_error_2d / torch.clamp(torch.norm(position_error_2d, dim=1, keepdim=True), min=1e-6)
         self.metrics["velocity_toward_goal"] = (velocity_2d * direction_to_goal).sum(dim=1)
         self.metrics["success_rate"] = self.success_tracker.get_success_rate()
+        active_assignments = float((self.current_guidance_ids >= 0).sum().item())
+        active_unique = float(torch.unique(self.current_guidance_ids).numel())
+        self.metrics["active_guidance_assignments"].fill_(active_assignments)
+        self.metrics["active_guidance_unique"].fill_(active_unique)
 
     def _resample_command(self, env_ids: Sequence[int]):
         if isinstance(env_ids, torch.Tensor):
