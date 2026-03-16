@@ -1,4 +1,4 @@
-"""Utilities to build a unified static collision mesh from referenced scene assets."""
+"""Utilities to build static collision geometry for shared-map drone navigation."""
 
 from __future__ import annotations
 
@@ -204,3 +204,64 @@ def build_merged_collision_mesh(
         UsdGeom.Imageable(mesh_prim).MakeInvisible()
 
     return merged_mesh_path
+
+
+def compute_prim_world_aabb(stage: Usd.Stage, prim_path: str) -> tuple[list[float], list[float]]:
+    """Compute the world-space axis-aligned bounding box for a prim."""
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        raise ValueError(f"Invalid prim path for AABB computation: {prim_path}")
+
+    bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_], useExtentsHint=True)
+    world_bbox = bbox_cache.ComputeWorldBound(prim).ComputeAlignedBox()
+    bbox_min = world_bbox.GetMin()
+    bbox_max = world_bbox.GetMax()
+    return [float(bbox_min[0]), float(bbox_min[1]), float(bbox_min[2])], [float(bbox_max[0]), float(bbox_max[1]), float(bbox_max[2])]
+
+
+def spawn_aabb_boundary_walls(
+    stage: Usd.Stage,
+    bbox_min: list[float],
+    bbox_max: list[float],
+    walls_root_path: str = "/World/Boundaries",
+    padding: float = 2.0,
+):
+    """Spawn four kinematic cuboid walls around a world-space AABB."""
+    if stage.GetPrimAtPath(walls_root_path).IsValid():
+        sim_utils.delete_prim(walls_root_path, stage=stage)
+
+    span_x = max((bbox_max[0] - bbox_min[0]) + 2.0 * padding, 1.0)
+    span_y = max((bbox_max[1] - bbox_min[1]) + 2.0 * padding, 1.0)
+    wall_height = max(3.0, (bbox_max[2] - bbox_min[2]) + 1.0)
+    wall_thickness = max(0.2, max(span_x, span_y, wall_height) / 40.0)
+    wall_center_z = bbox_min[2] + wall_height / 2.0
+
+    x_center = (bbox_min[0] + bbox_max[0]) / 2.0
+    y_center = (bbox_min[1] + bbox_max[1]) / 2.0
+    y_pos_wall = bbox_max[1] + padding + wall_thickness / 2.0
+    y_neg_wall = bbox_min[1] - padding - wall_thickness / 2.0
+    x_pos_wall = bbox_max[0] + padding + wall_thickness / 2.0
+    x_neg_wall = bbox_min[0] - padding - wall_thickness / 2.0
+
+    wall_cfg_x = sim_utils.MeshCuboidCfg(
+        size=(span_x, wall_thickness, wall_height),
+        collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(rigid_body_enabled=False, kinematic_enabled=True),
+        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.4, 0.8), opacity=0.15),
+    )
+    wall_cfg_y = wall_cfg_x.replace(size=(span_y, wall_thickness, wall_height))
+
+    wall_cfg_x.func(f"{walls_root_path}/north", wall_cfg_x, translation=(x_center, y_pos_wall, wall_center_z))
+    wall_cfg_x.func(f"{walls_root_path}/south", wall_cfg_x, translation=(x_center, y_neg_wall, wall_center_z))
+    wall_cfg_y.func(
+        f"{walls_root_path}/east",
+        wall_cfg_y,
+        translation=(x_pos_wall, y_center, wall_center_z),
+        orientation=(0.7071068, 0.0, 0.0, 0.7071068),
+    )
+    wall_cfg_y.func(
+        f"{walls_root_path}/west",
+        wall_cfg_y,
+        translation=(x_neg_wall, y_center, wall_center_z),
+        orientation=(0.7071068, 0.0, 0.0, 0.7071068),
+    )

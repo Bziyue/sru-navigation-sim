@@ -26,17 +26,18 @@ from isaaclab_nav_task.navigation.mdp.delay_manager import ObservationDelayManag
 
 PLANNING_FREQ = 5.0
 STATIC_SCAN_DIR = os.path.join(ISAACLAB_NAV_TASKS_ASSETS_DIR, "Environments", "StaticScan")
+STATIC_VISUAL_MESH_PRIM_PATH = "/World/StaticMesh"
 STATIC_COLLISION_MESH_PRIM_PATH = "/World/MapMesh"
 
 
 @configclass
 class DroneStaticSceneCfg(InteractiveSceneCfg):
-    """Scene with one cloned static mesh per environment."""
+    """Scene with a shared static scan mesh and isolated drones per training environment."""
 
     robot: ArticulationCfg = DJI_FPV_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
     static_mesh = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/StaticMesh",
+        prim_path=STATIC_VISUAL_MESH_PRIM_PATH,
         spawn=sim_utils.UsdFileCfg(
             usd_path=os.path.join(STATIC_SCAN_DIR, "DR_static_mesh.usdc"),
         ),
@@ -96,10 +97,18 @@ class DroneCommandsCfg:
         resampling_time_range=(1e9, 1e9),
         debug_vis=True,
         surface_bbox_data_path=os.path.join(STATIC_SCAN_DIR, "DR_Surface_BBox_Data.txt"),
+        map_mesh_prim_path=STATIC_COLLISION_MESH_PRIM_PATH,
         spawn_polygon_csv_path=os.path.join(STATIC_SCAN_DIR, "polygon_coords.csv"),
         guidance_paths_data_path=os.path.join(STATIC_SCAN_DIR, "all_region_pair_paths.txt"),
         flight_height=1.2,
-        min_goal_distance=3.0,
+        point_clearance=0.15,
+        region_points_per_region=192,
+        region_center_bias_ratio=0.7,
+        visualize_region_safe_points=True,
+        region_safe_points_vis_points_per_region=50,
+        visualize_region_boxes=True,
+        region_box_vis_height=0.12,
+        region_vis_z_offset=0.8,
     )
 
 
@@ -177,12 +186,14 @@ class DroneObservationsCfg:
 
 @configclass
 class DroneEventCfg:
-    build_collision_mesh = EventTerm(
-        func=mdp.build_static_scan_collision_mesh,
+    setup_static_scan_world = EventTerm(
+        func=mdp.setup_static_scan_world,
         mode="prestartup",
         params={
-            "source_prim_expr": "/World/envs/env_.*/StaticMesh",
+            "source_prim_expr": STATIC_VISUAL_MESH_PRIM_PATH,
             "output_prim_path": STATIC_COLLISION_MESH_PRIM_PATH,
+            "walls_root_path": "/World/Boundaries",
+            "wall_padding": 2.0,
             "hide_merged_mesh": True,
         },
     )

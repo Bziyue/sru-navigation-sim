@@ -19,7 +19,11 @@ import isaaclab.sim as sim_utils
 from isaaclab.envs import ManagerBasedEnv
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import math as math_utils
-from isaaclab_nav_task.navigation.utils import build_merged_collision_mesh
+from isaaclab_nav_task.navigation.utils import (
+    build_merged_collision_mesh,
+    compute_prim_world_aabb,
+    spawn_aabb_boundary_walls,
+)
 
 if TYPE_CHECKING:
     from isaaclab.sensors import RayCasterCamera
@@ -246,4 +250,32 @@ def build_static_scan_collision_mesh(
         source_prim_expr=source_prim_expr,
         merged_mesh_path=output_prim_path,
         hide_merged_mesh=hide_merged_mesh,
+    )
+
+
+def setup_static_scan_world(
+    env: ManagerBasedEnv,
+    env_ids,
+    source_prim_expr: str,
+    output_prim_path: str = "/World/MapMesh",
+    walls_root_path: str = "/World/Boundaries",
+    wall_padding: float = 2.0,
+    hide_merged_mesh: bool = True,
+):
+    """Create the shared collision mesh and AABB boundary walls for the static scan."""
+    del env_ids
+    stage = sim_utils.get_current_stage()
+    build_merged_collision_mesh(
+        stage=stage,
+        source_prim_expr=source_prim_expr,
+        merged_mesh_path=output_prim_path,
+        hide_merged_mesh=hide_merged_mesh,
+    )
+    bbox_min, bbox_max = compute_prim_world_aabb(stage, output_prim_path)
+    spawn_aabb_boundary_walls(
+        stage=stage,
+        bbox_min=bbox_min,
+        bbox_max=bbox_max,
+        walls_root_path=walls_root_path,
+        padding=wall_padding,
     )
