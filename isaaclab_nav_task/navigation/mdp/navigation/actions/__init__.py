@@ -6,5 +6,12 @@
 
 from .navigation_se2_actions import PerceptiveNavigationSE2Action
 from .navigation_se2_actions_cfg import PerceptiveNavigationSE2ActionCfg
+from .drone_se2_actions import DroneSE2Action
+from .drone_se2_actions_cfg import DroneSE2ActionCfg
 
-__all__ = ["PerceptiveNavigationSE2Action", "PerceptiveNavigationSE2ActionCfg"]
+__all__ = [
+    "PerceptiveNavigationSE2Action",
+    "PerceptiveNavigationSE2ActionCfg",
+    "DroneSE2Action",
+    "DroneSE2ActionCfg",
+]

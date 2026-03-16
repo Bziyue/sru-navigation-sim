@@ -14,9 +14,12 @@ from typing import TYPE_CHECKING
 
 import torch
 
+import isaaclab.sim as sim_utils
+
 from isaaclab.envs import ManagerBasedEnv
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import math as math_utils
+from isaaclab_nav_task.navigation.utils import build_merged_collision_mesh
 
 if TYPE_CHECKING:
     from isaaclab.sensors import RayCasterCamera
@@ -227,3 +230,20 @@ def disable_backward_penalty_after_steps(
         if hasattr(env, "episode_length_buf"):
             exceeded_steps = env.episode_length_buf[env_ids] >= disable_after_steps
             action_term_obj.disable_backward_penalty[env_ids[exceeded_steps]] = True
+
+
+def build_static_scan_collision_mesh(
+    env: ManagerBasedEnv,
+    env_ids,
+    source_prim_expr: str,
+    output_prim_path: str = "/World/MapMesh",
+    hide_merged_mesh: bool = True,
+):
+    """Build a unified collision mesh for static scan environments before sensors initialize."""
+    del env_ids
+    build_merged_collision_mesh(
+        stage=sim_utils.get_current_stage(),
+        source_prim_expr=source_prim_expr,
+        merged_mesh_path=output_prim_path,
+        hide_merged_mesh=hide_merged_mesh,
+    )

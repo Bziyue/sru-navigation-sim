@@ -13,5 +13,6 @@ ISAACLAB_NAV_TASKS_ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__f
 
 from .b2w import *
 from .aow_d import *
+from .drone import *
 
-__all__ = ["ISAACLAB_NAV_TASKS_ASSETS_DIR", "B2W_CFG", "ANYMAL_D_ON_WHEELS_CFG"]
+__all__ = ["ISAACLAB_NAV_TASKS_ASSETS_DIR", "B2W_CFG", "ANYMAL_D_ON_WHEELS_CFG", "DJI_FPV_CFG"]

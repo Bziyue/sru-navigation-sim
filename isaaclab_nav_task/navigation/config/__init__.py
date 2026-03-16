@@ -7,3 +7,4 @@
 
 from .b2w import *
 from .aow_d import *
+from .drone import *
