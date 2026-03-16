@@ -95,7 +95,7 @@ class DroneCommandsCfg:
     robot_goal = mdp.StaticRegionGoalCommandCfg(
         asset_name="robot",
         resampling_time_range=(1e9, 1e9),
-        debug_vis=True,
+        debug_vis=False,
         surface_bbox_data_path=os.path.join(STATIC_SCAN_DIR, "DR_Surface_BBox_Data.txt"),
         map_mesh_prim_path=STATIC_COLLISION_MESH_PRIM_PATH,
         spawn_polygon_csv_path=os.path.join(STATIC_SCAN_DIR, "polygon_coords.csv"),
@@ -105,9 +105,9 @@ class DroneCommandsCfg:
         safe_point_grid_spacing=0.25,
         region_points_per_region=192,
         region_center_bias_ratio=0.7,
-        visualize_region_safe_points=True,
+        visualize_region_safe_points=False,
         region_safe_points_vis_points_per_region=50,
-        visualize_region_boxes=True,
+        visualize_region_boxes=False,
         region_box_vis_height=0.12,
         region_vis_z_offset=0.8,
     )
