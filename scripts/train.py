@@ -84,6 +84,22 @@ torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 
 
+class TeeStream:
+    """Mirror writes to multiple streams."""
+
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for stream in self._streams:
+            stream.write(data)
+        return len(data)
+
+    def flush(self):
+        for stream in self._streams:
+            stream.flush()
+
+
 def dump_pickle_file(filename: str, data):
     """Persist configs for later replay/debugging on IsaacLab versions without dump_pickle."""
     directory = os.path.dirname(filename)
@@ -123,6 +139,13 @@ def main():
     if agent_cfg.run_name:
         log_dir += f"_{agent_cfg.run_name}"
     log_dir = os.path.join(log_root_path, log_dir)
+    os.makedirs(log_dir, exist_ok=True)
+
+    console_log_path = os.path.join(log_dir, "console.log")
+    console_log_file = open(console_log_path, "a", buffering=1, encoding="utf-8")
+    sys.stdout = TeeStream(sys.__stdout__, console_log_file)
+    sys.stderr = TeeStream(sys.__stderr__, console_log_file)
+    print(f"[INFO] Writing console log to: {console_log_path}")
 
     # Create runner
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
