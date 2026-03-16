@@ -21,6 +21,7 @@ class StaticRegionGoalCommandCfg(CommandTermCfg):
     guidance_paths_data_path: str | None = None
     flight_height: float = 1.2
     point_clearance: float = 0.15
+    safe_point_grid_spacing: float = 0.25
     region_points_per_region: int = 192
     region_center_bias_ratio: float = 0.7
     visualize_region_safe_points: bool = False

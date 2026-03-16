@@ -102,6 +102,7 @@ class DroneCommandsCfg:
         guidance_paths_data_path=os.path.join(STATIC_SCAN_DIR, "all_region_pair_paths.txt"),
         flight_height=1.2,
         point_clearance=0.15,
+        safe_point_grid_spacing=0.25,
         region_points_per_region=192,
         region_center_bias_ratio=0.7,
         visualize_region_safe_points=True,

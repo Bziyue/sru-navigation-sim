@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 _RECT_NAME_RE = re.compile(r"^Rectangle:\s*(.+)$")
 _CORNER_RE = re.compile(r"Corner\s+\d+:\s+X:\s*([-+0-9.]+),\s*Y:\s*([-+0-9.]+),\s*Z:\s*([-+0-9.]+)")
-_REGION_POINT_SET_CACHE: dict[tuple[str, str, float, float, int, float], tuple[list[dict], np.ndarray]] = {}
+_REGION_POINT_SET_CACHE: dict[tuple[str, str, float, float, float], tuple[list[dict], np.ndarray]] = {}
 
 
 class SuccessRateTracker:
@@ -140,45 +140,6 @@ def _trimesh_from_stage_mesh(mesh_prim_path: str) -> trimesh.Trimesh:
     return trimesh.Trimesh(vertices=vertices_np, faces=faces_np, process=False)
 
 
-def _estimate_region_ceiling_z(
-    mesh: trimesh.Trimesh,
-    region: dict,
-    flight_height: float,
-    min_room_height: float = 0.5,
-) -> float:
-    xy_min = np.asarray(region["xy_min"], dtype=np.float32)
-    xy_max = np.asarray(region["xy_max"], dtype=np.float32)
-    center_xy = np.asarray(region["center_xy"], dtype=np.float32)
-    floor_z = float(region["floor_z"])
-
-    span = np.maximum(xy_max - xy_min, 1e-3)
-    offsets = np.array(
-        [[0.0, 0.0], [-0.45, 0.0], [0.45, 0.0], [0.0, -0.45], [0.0, 0.45], [-0.3, -0.3], [-0.3, 0.3], [0.3, -0.3], [0.3, 0.3]],
-        dtype=np.float32,
-    )
-    sample_xy = np.clip(center_xy + offsets * (span * 0.5), xy_min + 0.05, xy_max - 0.05)
-    ray_origins = np.column_stack(
-        (sample_xy[:, 0], sample_xy[:, 1], np.full(len(sample_xy), max(flight_height, floor_z + 0.05), dtype=np.float32))
-    )
-    ray_directions = np.tile(np.array([0.0, 0.0, 1.0], dtype=np.float32), (len(sample_xy), 1))
-    locations, index_ray, _ = mesh.ray.intersects_location(
-        ray_origins=ray_origins,
-        ray_directions=ray_directions,
-        multiple_hits=True,
-    )
-
-    candidate_ceilings: list[float] = []
-    for ray_id in range(len(sample_xy)):
-        ray_hits = locations[index_ray == ray_id]
-        valid_hits = ray_hits[ray_hits[:, 2] > floor_z + min_room_height]
-        if len(valid_hits) > 0:
-            candidate_ceilings.append(float(valid_hits[:, 2].min()))
-
-    if candidate_ceilings:
-        return float(np.percentile(np.asarray(candidate_ceilings, dtype=np.float32), 75.0))
-    return float(flight_height + 2.0)
-
-
 def _build_occupied_kdtree(mesh: trimesh.Trimesh, num_surface_samples: int = 150000) -> KDTree:
     try:
         surface_points, _ = trimesh.sample.sample_surface_even(mesh, num_surface_samples)
@@ -187,65 +148,39 @@ def _build_occupied_kdtree(mesh: trimesh.Trimesh, num_surface_samples: int = 150
     return KDTree(np.asarray(surface_points, dtype=np.float32))
 
 
-def _sample_region_safe_points(
+def _build_uniform_axis(low: float, high: float, spacing: float) -> np.ndarray:
+    span = float(high - low)
+    if span <= spacing:
+        return np.asarray([(low + high) * 0.5], dtype=np.float32)
+
+    axis = np.arange(low + 0.5 * spacing, high, spacing, dtype=np.float32)
+    if len(axis) == 0:
+        axis = np.asarray([(low + high) * 0.5], dtype=np.float32)
+    return axis
+
+
+def _sample_region_safe_grid_points(
     region: dict,
     occupied_kdtree: KDTree,
     flight_height: float,
     point_clearance: float,
-    target_points_per_region: int,
-    center_bias_ratio: float,
+    grid_spacing: float,
 ) -> np.ndarray:
     xy_min = np.asarray(region["xy_min"], dtype=np.float32)
     xy_max = np.asarray(region["xy_max"], dtype=np.float32)
-    center_xy = np.asarray(region["center_xy"], dtype=np.float32)
-    floor_z = float(region["floor_z"])
-    ceiling_z = float(region["ceiling_z"])
-
-    if not (floor_z + point_clearance <= flight_height <= ceiling_z - point_clearance):
-        return np.zeros((0, 3), dtype=np.float32)
-
-    shrunk_xy_min = xy_min + point_clearance
-    shrunk_xy_max = xy_max - point_clearance
-    if np.any(shrunk_xy_max <= shrunk_xy_min):
-        shrunk_xy_min = xy_min.copy()
-        shrunk_xy_max = xy_max.copy()
-
-    span_xy = np.maximum(shrunk_xy_max - shrunk_xy_min, 1e-3)
-    num_candidates = max(target_points_per_region * 16, 512)
-    center_bias_ratio = float(np.clip(center_bias_ratio, 0.0, 1.0))
-    center_bias_count = int(round(num_candidates * center_bias_ratio))
-    uniform_count = num_candidates - center_bias_count
-
-    gaussian_xy = np.zeros((0, 2), dtype=np.float32)
-    if center_bias_count > 0:
-        gaussian_xy = np.random.normal(
-            loc=center_xy,
-            scale=np.maximum(span_xy * 0.18, 0.08),
-            size=(center_bias_count, 2),
-        ).astype(np.float32)
-        gaussian_xy = np.clip(gaussian_xy, shrunk_xy_min, shrunk_xy_max)
-
-    uniform_xy = np.zeros((0, 2), dtype=np.float32)
-    if uniform_count > 0:
-        uniform_xy = np.random.uniform(low=shrunk_xy_min, high=shrunk_xy_max, size=(uniform_count, 2)).astype(np.float32)
-
-    candidate_xy = np.concatenate((gaussian_xy, uniform_xy), axis=0)
+    x_axis = _build_uniform_axis(float(xy_min[0]), float(xy_max[0]), grid_spacing)
+    y_axis = _build_uniform_axis(float(xy_min[1]), float(xy_max[1]), grid_spacing)
+    grid_x, grid_y = np.meshgrid(x_axis, y_axis, indexing="xy")
     candidate_points = np.column_stack(
         (
-            candidate_xy[:, 0],
-            candidate_xy[:, 1],
-            np.full(len(candidate_xy), flight_height, dtype=np.float32),
+            grid_x.reshape(-1),
+            grid_y.reshape(-1),
+            np.full(grid_x.size, flight_height, dtype=np.float32),
         )
-    )
+    ).astype(np.float32, copy=False)
 
     distances, _ = occupied_kdtree.query(candidate_points, k=1)
-    valid_points = candidate_points[np.asarray(distances) >= point_clearance]
-    if len(valid_points) == 0:
-        return np.zeros((0, 3), dtype=np.float32)
-
-    distances_to_center = np.linalg.norm(valid_points[:, :2] - center_xy[None, :], axis=1)
-    keep_count = min(len(valid_points), max(target_points_per_region, 64))
-    return valid_points[np.argsort(distances_to_center)[:keep_count]].astype(np.float32, copy=False)
+    return candidate_points[np.asarray(distances) >= point_clearance].astype(np.float32, copy=False)
 
 
 def _build_region_point_sets(
@@ -253,16 +188,14 @@ def _build_region_point_sets(
     map_mesh_prim_path: str,
     flight_height: float,
     point_clearance: float,
-    region_points_per_region: int,
-    region_center_bias_ratio: float,
+    grid_spacing: float,
 ) -> tuple[list[dict], np.ndarray]:
     cache_key = (
         surface_bbox_data_path,
         map_mesh_prim_path,
         float(flight_height),
         float(point_clearance),
-        int(region_points_per_region),
-        float(region_center_bias_ratio),
+        float(grid_spacing),
     )
     if cache_key in _REGION_POINT_SET_CACHE:
         return _REGION_POINT_SET_CACHE[cache_key]
@@ -271,39 +204,35 @@ def _build_region_point_sets(
     occupied_kdtree = _build_occupied_kdtree(mesh)
     regions = _load_region_boxes(surface_bbox_data_path)
 
-    valid_region_sets: list[dict] = []
+    all_safe_points: list[np.ndarray] = []
     for region in regions:
-        region["ceiling_z"] = _estimate_region_ceiling_z(mesh, region, flight_height=flight_height)
-        points = _sample_region_safe_points(
+        points = _sample_region_safe_grid_points(
             region=region,
             occupied_kdtree=occupied_kdtree,
             flight_height=flight_height,
             point_clearance=point_clearance,
-            target_points_per_region=region_points_per_region,
-            center_bias_ratio=region_center_bias_ratio,
+            grid_spacing=grid_spacing,
         )
-        if len(points) == 0:
-            continue
-        valid_region_sets.append(
-            {
-                "name": region["name"],
-                "xy_min": region["xy_min"],
-                "xy_max": region["xy_max"],
-                "center": np.array([region["center_xy"][0], region["center_xy"][1], flight_height], dtype=np.float32),
-                "spawn_points": points,
-                "target_points": points.copy(),
-            }
-        )
+        region["center"] = np.array([region["center_xy"][0], region["center_xy"][1], flight_height], dtype=np.float32)
+        region["safe_points"] = points
+        if len(points) > 0:
+            all_safe_points.append(points)
 
-    if len(valid_region_sets) < 2:
+    if not all_safe_points:
+        raise RuntimeError(f"No safe points were generated from {surface_bbox_data_path}.")
+
+    safe_points = np.concatenate(all_safe_points, axis=0)
+    _, unique_indices = np.unique(np.round(safe_points, decimals=4), axis=0, return_index=True)
+    safe_points = safe_points[np.sort(unique_indices)].astype(np.float32, copy=False)
+
+    if len(safe_points) < 2:
         raise RuntimeError(
-            "Expected at least two valid region point sets from "
-            f"{surface_bbox_data_path}, but got {len(valid_region_sets)}."
+            "Expected at least two safe points from "
+            f"{surface_bbox_data_path}, but got {len(safe_points)}."
         )
 
-    centers = np.asarray([region["center"] for region in valid_region_sets], dtype=np.float32)
-    _REGION_POINT_SET_CACHE[cache_key] = (valid_region_sets, centers)
-    return valid_region_sets, centers
+    _REGION_POINT_SET_CACHE[cache_key] = (regions, safe_points)
+    return regions, safe_points
 
 
 class StaticRegionGoalCommand(CommandTerm):
@@ -318,15 +247,13 @@ class StaticRegionGoalCommand(CommandTerm):
         self.env = env
         self.robot: Articulation = env.scene[cfg.asset_name]
 
-        region_point_sets, region_centers = _build_region_point_sets(
+        region_point_sets, safe_points = _build_region_point_sets(
             surface_bbox_data_path=cfg.surface_bbox_data_path,
             map_mesh_prim_path=cfg.map_mesh_prim_path,
             flight_height=float(cfg.flight_height),
             point_clearance=float(cfg.point_clearance),
-            region_points_per_region=int(cfg.region_points_per_region),
-            region_center_bias_ratio=float(cfg.region_center_bias_ratio),
+            grid_spacing=float(cfg.safe_point_grid_spacing),
         )
-        all_regions = _load_region_boxes(cfg.surface_bbox_data_path)
         self.region_names = [region["name"] for region in region_point_sets]
         self.region_xy_min = torch.as_tensor(
             np.asarray([region["xy_min"] for region in region_point_sets], dtype=np.float32), device=self.device
@@ -334,22 +261,17 @@ class StaticRegionGoalCommand(CommandTerm):
         self.region_xy_max = torch.as_tensor(
             np.asarray([region["xy_max"] for region in region_point_sets], dtype=np.float32), device=self.device
         )
+        region_centers = np.asarray([region["center"] for region in region_point_sets], dtype=np.float32)
         self.region_centers = torch.as_tensor(region_centers[:, :2], device=self.device)
-        self.region_spawn_point_sets = [
-            torch.as_tensor(region["spawn_points"], dtype=torch.float32, device=self.device) for region in region_point_sets
-        ]
-        self.region_target_point_sets = [
-            torch.as_tensor(region["target_points"], dtype=torch.float32, device=self.device) for region in region_point_sets
-        ]
+        self.safe_point_pool = torch.as_tensor(safe_points, dtype=torch.float32, device=self.device)
         self.flight_height = float(cfg.flight_height)
         self.visualize_region_boxes = bool(cfg.visualize_region_boxes)
         self.region_safe_points_vis, self.region_safe_points_vis_indices = self._build_region_safe_points_vis(
-            all_regions=all_regions,
-            valid_regions=region_point_sets,
+            all_regions=region_point_sets,
             points_per_region=int(cfg.region_safe_points_vis_points_per_region),
         )
         self.region_box_vis_translations, self.region_box_vis_scales = self._build_region_box_vis(
-            all_regions=all_regions,
+            all_regions=region_point_sets,
             box_height=float(cfg.region_box_vis_height),
             z_offset=float(cfg.region_vis_z_offset),
         )
@@ -385,19 +307,16 @@ class StaticRegionGoalCommand(CommandTerm):
     def _build_region_safe_points_vis(
         self,
         all_regions: list[dict],
-        valid_regions: list[dict],
         points_per_region: int,
     ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         if not self.visualize_region_safe_points:
             return None, None
 
-        valid_regions_by_name = {region["name"]: region for region in valid_regions}
         vis_points: list[torch.Tensor] = []
         vis_indices: list[torch.Tensor] = []
         for region in all_regions:
-            valid_region = valid_regions_by_name.get(region["name"])
-            if valid_region is not None and len(valid_region["spawn_points"]) > 0:
-                points = torch.as_tensor(valid_region["spawn_points"], dtype=torch.float32, device=self.device)
+            if len(region["safe_points"]) > 0:
+                points = torch.as_tensor(region["safe_points"], dtype=torch.float32, device=self.device)
                 if points_per_region > 0 and len(points) > points_per_region:
                     indices = torch.linspace(0, len(points) - 1, points_per_region, device=self.device)
                     points = points[indices.round().long()]
@@ -449,25 +368,12 @@ class StaticRegionGoalCommand(CommandTerm):
     def _get_unscaled_command(self) -> torch.Tensor:
         return self.goal_command_body_unscaled
 
-    def _sample_points_from_region_sets(self, region_ids: torch.Tensor, region_point_sets: list[torch.Tensor]) -> torch.Tensor:
-        sampled_points = torch.zeros((len(region_ids), 3), dtype=torch.float32, device=self.device)
-        for region_id in torch.unique(region_ids):
-            region_id_int = int(region_id.item())
-            mask = region_ids == region_id
-            candidates = region_point_sets[region_id_int]
-            indices = torch.randint(0, len(candidates), (int(mask.sum().item()),), device=self.device)
-            sampled_points[mask] = candidates[indices]
-        return sampled_points
-
-    def _sample_region_pairs(self, env_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        num_regions = len(self.region_spawn_point_sets)
-        spawn_region_ids = torch.randint(0, num_regions, (len(env_ids),), device=self.device)
-        goal_region_ids = torch.randint(0, num_regions - 1, (len(env_ids),), device=self.device)
-        goal_region_ids += (goal_region_ids >= spawn_region_ids).long()
-        spawn_points = self._sample_points_from_region_sets(spawn_region_ids, self.region_spawn_point_sets)
-        goal_points = self._sample_points_from_region_sets(goal_region_ids, self.region_target_point_sets)
-
-        return spawn_region_ids, goal_region_ids, spawn_points, goal_points
+    def _sample_point_pairs(self, env_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        num_safe_points = len(self.safe_point_pool)
+        spawn_indices = torch.randint(0, num_safe_points, (len(env_ids),), device=self.device)
+        goal_indices = torch.randint(0, num_safe_points - 1, (len(env_ids),), device=self.device)
+        goal_indices += (goal_indices >= spawn_indices).long()
+        return self.safe_point_pool[spawn_indices], self.safe_point_pool[goal_indices]
 
     def _update_metrics(self):
         position_error = self.goal_position_world - self.robot.data.root_pos_w[:, :3]
@@ -489,9 +395,9 @@ class StaticRegionGoalCommand(CommandTerm):
         self.time_at_goal[env_ids_tensor] = 0
         self.total_distance_traveled[env_ids_tensor] = 0.0
 
-        spawn_region_ids, goal_region_ids, spawn_points, goal_points = self._sample_region_pairs(env_ids_tensor)
-        self.spawn_region_ids[env_ids_tensor] = spawn_region_ids
-        self.goal_region_ids[env_ids_tensor] = goal_region_ids
+        spawn_points, goal_points = self._sample_point_pairs(env_ids_tensor)
+        self.spawn_region_ids[env_ids_tensor] = 0
+        self.goal_region_ids[env_ids_tensor] = 0
         self.spawn_position_world[env_ids_tensor] = spawn_points
         self.goal_position_world[env_ids_tensor] = goal_points
         self.env.scene.env_origins[env_ids_tensor] = spawn_points
