@@ -149,14 +149,11 @@ class RslRlOnPolicyRunnerCfg:
     # Logging parameters
     ##
 
-    logger: Literal["tensorboard", "neptune", "wandb"] = "tensorboard"
+    logger: Literal["tensorboard", "neptune"] = "tensorboard"
     """The logger to use. Default is tensorboard."""
 
     neptune_project: str = "isaaclab"
     """The neptune project name. Default is "isaaclab"."""
-
-    wandb_project: str = "isaaclab"
-    """The wandb project name. Default is "isaaclab"."""
 
     ##
     # Loading parameters

@@ -21,9 +21,8 @@ class AowDNavMDPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 16
     max_iterations = 15000
     save_interval = 500
-    logger = "wandb"
+    logger = "tensorboard"
     seed = 50
-    wandb_project = "isaaclab_nav_aow_d"
     experiment_name = "aow_d_navigation_mdpo"
     empirical_normalization = False
     reward_shifting_value = 0.05
@@ -76,8 +75,7 @@ class AowDNavPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 15000
     save_interval = 500
-    logger = "wandb"
-    wandb_project = "isaaclab_nav_aow_d"
+    logger = "tensorboard"
     experiment_name = "aow_d_navigation_ppo"
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(

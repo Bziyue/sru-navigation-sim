@@ -21,9 +21,8 @@ class B2WNavMDPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 16
     max_iterations = 15000
     save_interval = 500
-    logger = "wandb"
+    logger = "tensorboard"
     seed = 60
-    wandb_project = "isaaclab_nav_b2w"
     experiment_name = "b2w_navigation_mdpo"
     empirical_normalization = False
     reward_shifting_value = 0.05
@@ -77,9 +76,8 @@ class B2WNavPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 16
     max_iterations = 15000
     save_interval = 500
-    logger = "wandb"
+    logger = "tensorboard"
     seed = 60
-    wandb_project = "isaaclab_nav_b2w"
     experiment_name = "b2w_navigation_ppo"
     empirical_normalization = False
     reward_shifting_value = 0.05

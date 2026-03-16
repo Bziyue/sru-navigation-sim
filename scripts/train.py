@@ -44,7 +44,7 @@ parser.add_argument("--num_envs", type=int, default=None, help="Number of enviro
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
-parser.add_argument("--run_name", type=str, default=None, help="Name of the wandb run (appended to log directory).")
+parser.add_argument("--run_name", type=str, default=None, help="Custom run name suffix appended to the log directory.")
 
 # Append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)

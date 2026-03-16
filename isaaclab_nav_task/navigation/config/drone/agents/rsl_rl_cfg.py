@@ -14,9 +14,8 @@ class DroneStaticNavPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 16
     max_iterations = 15000
     save_interval = 500
-    logger = "wandb"
+    logger = "tensorboard"
     seed = 60
-    wandb_project = "isaaclab_nav_drone"
     experiment_name = "drone_static_navigation_ppo"
     empirical_normalization = False
     reward_shifting_value = 0.05
