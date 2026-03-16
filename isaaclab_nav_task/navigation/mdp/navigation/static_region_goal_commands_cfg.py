@@ -19,6 +19,8 @@ class StaticRegionGoalCommandCfg(CommandTermCfg):
     map_mesh_prim_path: str = "/World/MapMesh"
     spawn_polygon_csv_path: str | None = None
     guidance_paths_data_path: str | None = None
+    guidance_trajectories_data_path: str | None = None
+    guidance_trajectory_sample_dt: float = 0.2
     flight_height: float = 1.2
     point_clearance: float = 0.15
     safe_point_grid_spacing: float = 0.25

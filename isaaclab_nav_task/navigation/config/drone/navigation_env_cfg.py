@@ -100,6 +100,7 @@ class DroneCommandsCfg:
         map_mesh_prim_path=STATIC_COLLISION_MESH_PRIM_PATH,
         spawn_polygon_csv_path=os.path.join(STATIC_SCAN_DIR, "polygon_coords.csv"),
         guidance_paths_data_path=os.path.join(STATIC_SCAN_DIR, "all_region_pair_paths.txt"),
+        guidance_trajectories_data_path=os.path.join(STATIC_SCAN_DIR, "all_region_pair_trajectories.json"),
         flight_height=1.2,
         point_clearance=0.15,
         safe_point_grid_spacing=0.25,
@@ -232,6 +233,16 @@ class DroneEventCfg:
 @configclass
 class DroneRewardsCfg:
     action_rate_l1 = RewTerm(func=mdp.action_rate_l1, weight=-0.05)
+    guidance_progress = RewTerm(
+        func=mdp.guidance_progress_reward,
+        weight=1.0,
+        params={"command_name": "robot_goal", "clamp_delta": 0.5},
+    )
+    guidance_lateral_error = RewTerm(
+        func=mdp.guidance_lateral_error_penalty,
+        weight=-0.15,
+        params={"command_name": "robot_goal", "sigma": 0.75},
+    )
     episode_termination = RewTerm(func=mdp.is_terminated, weight=-50.0)
     reach_goal_xy_soft = RewTerm(
         func=mdp.reach_goal_xyz,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
@@ -235,6 +236,122 @@ def _build_region_point_sets(
     return regions, safe_points
 
 
+def _sample_quintic_centerline(
+    breakpoints: list[float],
+    coefficients: list[list[float]],
+    sample_dt: float,
+    flight_height: float,
+) -> np.ndarray:
+    num_segments = len(breakpoints) - 1
+    if num_segments <= 0:
+        raise ValueError("Trajectory must contain at least one segment.")
+    if len(coefficients) != num_segments * 6:
+        raise ValueError(
+            f"Expected {num_segments * 6} coefficient rows for {num_segments} segments, got {len(coefficients)}."
+        )
+
+    sampled_points: list[np.ndarray] = []
+    coeffs_np = np.asarray(coefficients, dtype=np.float32).reshape(num_segments, 6, 3)
+
+    for seg_idx in range(num_segments):
+        duration = float(breakpoints[seg_idx + 1] - breakpoints[seg_idx])
+        if duration <= 0.0:
+            continue
+
+        local_times = np.arange(0.0, duration, sample_dt, dtype=np.float32)
+        if seg_idx == num_segments - 1 or len(local_times) == 0 or not np.isclose(local_times[-1], duration):
+            local_times = np.concatenate([local_times, np.asarray([duration], dtype=np.float32)])
+
+        powers = np.stack([np.power(local_times, power, dtype=np.float32) for power in range(6)], axis=1)
+        segment_points = np.einsum("tk,kc->tc", powers, coeffs_np[seg_idx]).astype(np.float32, copy=False)
+        sampled_points.append(segment_points)
+
+    if not sampled_points:
+        raise ValueError("Failed to sample any points from trajectory coefficients.")
+
+    centerline = np.concatenate(sampled_points, axis=0)
+    centerline[:, 2] = flight_height
+    _, unique_indices = np.unique(np.round(centerline[:, :2], decimals=4), axis=0, return_index=True)
+    centerline = centerline[np.sort(unique_indices)]
+    if len(centerline) < 2:
+        raise ValueError("Sampled trajectory centerline must contain at least two distinct points.")
+    return centerline.astype(np.float32, copy=False)
+
+
+def _load_guidance_centerlines(
+    guidance_trajectories_data_path: str,
+    flight_height: float,
+    sample_dt: float,
+    num_regions: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    with open(guidance_trajectories_data_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    trajectories = payload.get("trajectories", [])
+    if not isinstance(trajectories, list) or not trajectories:
+        raise ValueError(f"No trajectories found in {guidance_trajectories_data_path}")
+
+    directed_paths: list[np.ndarray] = []
+    directed_arcs: list[np.ndarray] = []
+    directed_pairs: list[tuple[int, int]] = []
+
+    for trajectory in trajectories:
+        if not trajectory.get("path_reachable", False):
+            continue
+        if not trajectory.get("optimization_succeeded", False):
+            continue
+
+        source_id = int(trajectory["source_id"])
+        target_id = int(trajectory["target_id"])
+        centerline = _sample_quintic_centerline(
+            breakpoints=list(trajectory["breakpoints"]),
+            coefficients=list(trajectory["coefficients"]),
+            sample_dt=sample_dt,
+            flight_height=flight_height,
+        )
+        segment_lengths = np.linalg.norm(np.diff(centerline[:, :2], axis=0), axis=1)
+        arc_lengths = np.concatenate([np.zeros(1, dtype=np.float32), np.cumsum(segment_lengths, dtype=np.float32)], axis=0)
+
+        directed_pairs.append((source_id, target_id))
+        directed_paths.append(centerline[:, :2].astype(np.float32, copy=False))
+        directed_arcs.append(arc_lengths.astype(np.float32, copy=False))
+
+        directed_pairs.append((target_id, source_id))
+        directed_paths.append(centerline[::-1, :2].astype(np.float32, copy=False))
+        reversed_arcs = np.concatenate(
+            [np.zeros(1, dtype=np.float32), np.cumsum(segment_lengths[::-1], dtype=np.float32)],
+            axis=0,
+        )
+        directed_arcs.append(reversed_arcs.astype(np.float32, copy=False))
+
+    if not directed_paths:
+        raise RuntimeError(f"No usable optimized trajectories found in {guidance_trajectories_data_path}")
+
+    max_len = max(len(path) for path in directed_paths)
+    padded_paths = np.zeros((len(directed_paths), max_len, 2), dtype=np.float32)
+    padded_arcs = np.zeros((len(directed_paths), max_len), dtype=np.float32)
+    path_lengths = np.zeros(len(directed_paths), dtype=np.int64)
+    pair_lookup = np.full((num_regions, num_regions), -1, dtype=np.int64)
+
+    for idx, ((source_id, target_id), path_xy, arc_lengths) in enumerate(zip(directed_pairs, directed_paths, directed_arcs, strict=True)):
+        length = len(path_xy)
+        padded_paths[idx, :length] = path_xy
+        padded_arcs[idx, :length] = arc_lengths
+        path_lengths[idx] = length
+        pair_lookup[source_id, target_id] = idx
+
+    if np.any(pair_lookup[np.triu_indices(num_regions, k=1)] < 0):
+        raise RuntimeError("Missing directed guidance paths for some region pairs.")
+
+    pair_ids = np.asarray(directed_pairs, dtype=np.int64)
+    return (
+        torch.as_tensor(padded_paths, dtype=torch.float32),
+        torch.as_tensor(padded_arcs, dtype=torch.float32),
+        torch.as_tensor(path_lengths, dtype=torch.long),
+        torch.as_tensor(pair_ids, dtype=torch.long),
+    )
+
+
 class StaticRegionGoalCommand(CommandTerm):
     """Sample spawn and goal points from predefined mesh regions."""
 
@@ -264,8 +381,30 @@ class StaticRegionGoalCommand(CommandTerm):
         region_centers = np.asarray([region["center"] for region in region_point_sets], dtype=np.float32)
         self.region_centers = torch.as_tensor(region_centers[:, :2], device=self.device)
         self.safe_point_pool = torch.as_tensor(safe_points, dtype=torch.float32, device=self.device)
+        self.region_safe_points = [
+            torch.as_tensor(region["safe_points"], dtype=torch.float32, device=self.device) for region in region_point_sets
+        ]
         self.flight_height = float(cfg.flight_height)
         self.visualize_region_boxes = bool(cfg.visualize_region_boxes)
+        self.guidance_sample_dt = float(cfg.guidance_trajectory_sample_dt)
+
+        if cfg.guidance_trajectories_data_path is None:
+            raise ValueError("guidance_trajectories_data_path must be provided for static region guidance.")
+        (
+            guidance_paths_xy,
+            guidance_arc_lengths,
+            guidance_path_lengths,
+            guidance_pair_ids,
+        ) = _load_guidance_centerlines(
+            guidance_trajectories_data_path=cfg.guidance_trajectories_data_path,
+            flight_height=self.flight_height,
+            sample_dt=self.guidance_sample_dt,
+            num_regions=len(region_point_sets),
+        )
+        self.guidance_paths_xy = guidance_paths_xy.to(self.device)
+        self.guidance_arc_lengths = guidance_arc_lengths.to(self.device)
+        self.guidance_path_lengths = guidance_path_lengths.to(self.device)
+        self.guidance_pair_ids = guidance_pair_ids.to(self.device)
         self.region_safe_points_vis, self.region_safe_points_vis_indices = self._build_region_safe_points_vis(
             all_regions=region_point_sets,
             points_per_region=int(cfg.region_safe_points_vis_points_per_region),
@@ -287,6 +426,11 @@ class StaticRegionGoalCommand(CommandTerm):
         self.spawn_heading_world = torch.zeros(self.num_envs, device=self.device)
         self.spawn_region_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.goal_region_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.current_guidance_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.guidance_progress = torch.zeros(self.num_envs, device=self.device)
+        self.previous_guidance_progress = torch.zeros(self.num_envs, device=self.device)
+        self.guidance_progress_delta = torch.zeros(self.num_envs, device=self.device)
+        self.guidance_lateral_error = torch.zeros(self.num_envs, device=self.device)
 
         self.steps_at_goal = torch.zeros(self.num_envs, device=self.device)
         self.time_at_goal = torch.zeros(self.num_envs, device=self.device)
@@ -368,12 +512,30 @@ class StaticRegionGoalCommand(CommandTerm):
     def _get_unscaled_command(self) -> torch.Tensor:
         return self.goal_command_body_unscaled
 
-    def _sample_point_pairs(self, env_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        num_safe_points = len(self.safe_point_pool)
-        spawn_indices = torch.randint(0, num_safe_points, (len(env_ids),), device=self.device)
-        goal_indices = torch.randint(0, num_safe_points - 1, (len(env_ids),), device=self.device)
-        goal_indices += (goal_indices >= spawn_indices).long()
-        return self.safe_point_pool[spawn_indices], self.safe_point_pool[goal_indices]
+    def _sample_safe_points_from_regions(self, region_ids: torch.Tensor) -> torch.Tensor:
+        sampled_points = torch.zeros((len(region_ids), 3), dtype=torch.float32, device=self.device)
+        for local_idx, region_id in enumerate(region_ids.tolist()):
+            region_points = self.region_safe_points[region_id]
+            if len(region_points) == 0:
+                raise RuntimeError(f"Region {region_id} does not contain any safe spawn points.")
+            point_index = torch.randint(0, len(region_points), (1,), device=self.device).item()
+            sampled_points[local_idx] = region_points[point_index]
+        return sampled_points
+
+    def _project_guidance_state(self, positions_xy: torch.Tensor, guidance_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        path_xy = self.guidance_paths_xy[guidance_ids]
+        arc_lengths = self.guidance_arc_lengths[guidance_ids]
+        path_lengths = self.guidance_path_lengths[guidance_ids]
+
+        deltas = path_xy - positions_xy.unsqueeze(1)
+        distances_sq = torch.sum(deltas * deltas, dim=-1)
+        max_points = path_xy.shape[1]
+        valid_mask = torch.arange(max_points, device=self.device).unsqueeze(0) < path_lengths.unsqueeze(1)
+        distances_sq = torch.where(valid_mask, distances_sq, torch.full_like(distances_sq, float("inf")))
+        closest_indices = torch.argmin(distances_sq, dim=1)
+        lateral_error = torch.sqrt(torch.gather(distances_sq, 1, closest_indices.unsqueeze(1)).squeeze(1).clamp_min(0.0))
+        progress = torch.gather(arc_lengths, 1, closest_indices.unsqueeze(1)).squeeze(1)
+        return progress, lateral_error
 
     def _update_metrics(self):
         position_error = self.goal_position_world - self.robot.data.root_pos_w[:, :3]
@@ -395,15 +557,30 @@ class StaticRegionGoalCommand(CommandTerm):
         self.time_at_goal[env_ids_tensor] = 0
         self.total_distance_traveled[env_ids_tensor] = 0.0
 
-        spawn_points, goal_points = self._sample_point_pairs(env_ids_tensor)
-        self.spawn_region_ids[env_ids_tensor] = 0
-        self.goal_region_ids[env_ids_tensor] = 0
+        sampled_guidance_indices = torch.randint(0, len(self.guidance_pair_ids), (len(env_ids_tensor),), device=self.device)
+        sampled_pairs = self.guidance_pair_ids[sampled_guidance_indices]
+        source_region_ids = sampled_pairs[:, 0]
+        target_region_ids = sampled_pairs[:, 1]
+
+        spawn_points = self._sample_safe_points_from_regions(source_region_ids)
+        goal_points = self._sample_safe_points_from_regions(target_region_ids)
+        self.spawn_region_ids[env_ids_tensor] = source_region_ids
+        self.goal_region_ids[env_ids_tensor] = target_region_ids
+        self.current_guidance_ids[env_ids_tensor] = sampled_guidance_indices
         self.spawn_position_world[env_ids_tensor] = spawn_points
         self.goal_position_world[env_ids_tensor] = goal_points
         self.env.scene.env_origins[env_ids_tensor] = spawn_points
         self.previous_position[env_ids_tensor] = spawn_points
         self.initial_distance_to_goal[env_ids_tensor] = torch.norm(goal_points - spawn_points, dim=1)
         self.closest_distance_to_goal[env_ids_tensor] = self.initial_distance_to_goal[env_ids_tensor]
+        start_progress, start_lateral_error = self._project_guidance_state(
+            positions_xy=spawn_points[:, :2],
+            guidance_ids=sampled_guidance_indices,
+        )
+        self.guidance_progress[env_ids_tensor] = start_progress
+        self.previous_guidance_progress[env_ids_tensor] = start_progress
+        self.guidance_progress_delta[env_ids_tensor] = 0.0
+        self.guidance_lateral_error[env_ids_tensor] = start_lateral_error
 
     def _update_command(self):
         inverse_pos, inverse_rot = subtract_frame_transforms(self.robot.data.root_pos_w, self.robot.data.root_quat_w)
@@ -422,6 +599,14 @@ class StaticRegionGoalCommand(CommandTerm):
         step_distance = torch.norm(self.robot.data.root_pos_w - self.previous_position, dim=1)
         self.total_distance_traveled += step_distance
         self.previous_position = self.robot.data.root_pos_w.clone()
+        guidance_progress, guidance_lateral_error = self._project_guidance_state(
+            positions_xy=self.robot.data.root_pos_w[:, :2],
+            guidance_ids=self.current_guidance_ids,
+        )
+        self.previous_guidance_progress.copy_(self.guidance_progress)
+        self.guidance_progress.copy_(guidance_progress)
+        self.guidance_progress_delta.copy_(self.guidance_progress - self.previous_guidance_progress)
+        self.guidance_lateral_error.copy_(guidance_lateral_error)
 
     def reset(self, env_ids: Sequence[int] | None = None) -> dict[str, float]:
         metrics_obs = self.env.observation_manager.compute_group(group_name="metrics")

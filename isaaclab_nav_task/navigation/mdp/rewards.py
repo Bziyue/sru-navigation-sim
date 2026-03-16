@@ -132,3 +132,25 @@ def backward_movement_penalty(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg 
     # Only penalize negative forward velocity (backward movement)
     backward_velocity = torch.clamp(-forward_velocity, min=0.0, max=1.0)
     return backward_velocity
+
+
+def guidance_progress_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    clamp_delta: float = 0.5,
+) -> torch.Tensor:
+    """Reward positive progress along the current guidance centerline."""
+    goal_cmd_generator = env.command_manager._terms[command_name]
+    progress_delta = torch.clamp(goal_cmd_generator.guidance_progress_delta, min=-clamp_delta, max=clamp_delta)
+    return progress_delta / max(clamp_delta, 1e-6)
+
+
+def guidance_lateral_error_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sigma: float = 0.75,
+) -> torch.Tensor:
+    """Penalize lateral deviation from the guidance centerline."""
+    goal_cmd_generator = env.command_manager._terms[command_name]
+    normalized_error = goal_cmd_generator.guidance_lateral_error / max(sigma, 1e-6)
+    return torch.tanh(normalized_error)
