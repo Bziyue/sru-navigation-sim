@@ -314,5 +314,6 @@ class DroneStaticNavigationEnvCfg_DEV(DroneStaticNavigationEnvCfg):
 class DroneStaticNavigationEnvCfg_PLAY(DroneStaticNavigationEnvCfg):
     def __post_init__(self):
         super().__post_init__()
-        self.scene.num_envs = 16
+        self.scene.num_envs = 1
+        self.commands.robot_goal.debug_vis = True
         self.observations.policy.enable_corruption = False

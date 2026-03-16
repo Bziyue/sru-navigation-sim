@@ -431,6 +431,7 @@ class StaticRegionGoalCommand(CommandTerm):
         self.previous_guidance_progress = torch.zeros(self.num_envs, device=self.device)
         self.guidance_progress_delta = torch.zeros(self.num_envs, device=self.device)
         self.guidance_lateral_error = torch.zeros(self.num_envs, device=self.device)
+        self.guidance_vis_point_cap = 160
 
         self.steps_at_goal = torch.zeros(self.num_envs, device=self.device)
         self.time_at_goal = torch.zeros(self.num_envs, device=self.device)
@@ -536,6 +537,25 @@ class StaticRegionGoalCommand(CommandTerm):
         lateral_error = torch.sqrt(torch.gather(distances_sq, 1, closest_indices.unsqueeze(1)).squeeze(1).clamp_min(0.0))
         progress = torch.gather(arc_lengths, 1, closest_indices.unsqueeze(1)).squeeze(1)
         return progress, lateral_error
+
+    def _get_guidance_vis_points_for_env(self, env_index: int = 0) -> torch.Tensor | None:
+        if self.num_envs <= 0:
+            return None
+
+        guidance_id = int(self.current_guidance_ids[env_index].item())
+        path_length = int(self.guidance_path_lengths[guidance_id].item())
+        if path_length <= 0:
+            return None
+
+        path_xy = self.guidance_paths_xy[guidance_id, :path_length]
+        if path_length > self.guidance_vis_point_cap:
+            sample_indices = torch.linspace(0, path_length - 1, self.guidance_vis_point_cap, device=self.device)
+            path_xy = path_xy[sample_indices.round().long()]
+
+        vis_points = torch.zeros((len(path_xy), 3), dtype=torch.float32, device=self.device)
+        vis_points[:, :2] = path_xy
+        vis_points[:, 2] = self.flight_height + 0.12
+        return vis_points
 
     def _update_metrics(self):
         position_error = self.goal_position_world - self.robot.data.root_pos_w[:, :3]
@@ -692,6 +712,21 @@ class StaticRegionGoalCommand(CommandTerm):
                 cfg.markers["cuboid"].visual_material.opacity = 0.45
                 self.region_box_marker = VisualizationMarkers(cfg)
 
+            if not hasattr(self, "guidance_path_marker"):
+                cfg = VisualizationMarkersCfg(
+                    prim_path="/Visuals/Command/guidance_path",
+                    markers={
+                        "point": sim_utils.SphereCfg(
+                            radius=0.06,
+                            visual_material=sim_utils.PreviewSurfaceCfg(
+                                diffuse_color=(0.15, 0.95, 0.25),
+                                opacity=0.85,
+                            ),
+                        ),
+                    },
+                )
+                self.guidance_path_marker = VisualizationMarkers(cfg)
+
             self.goal_marker.set_visibility(True)
             self.spawn_marker.set_visibility(True)
             self.desired_velocity_marker.set_visibility(True)
@@ -700,6 +735,8 @@ class StaticRegionGoalCommand(CommandTerm):
                 self.region_safe_points_marker.set_visibility(True)
             if hasattr(self, "region_box_marker"):
                 self.region_box_marker.set_visibility(True)
+            if hasattr(self, "guidance_path_marker"):
+                self.guidance_path_marker.set_visibility(True)
         else:
             for name in [
                 "goal_marker",
@@ -708,6 +745,7 @@ class StaticRegionGoalCommand(CommandTerm):
                 "current_velocity_marker",
                 "region_safe_points_marker",
                 "region_box_marker",
+                "guidance_path_marker",
             ]:
                 if hasattr(self, name):
                     getattr(self, name).set_visibility(False)
@@ -729,6 +767,10 @@ class StaticRegionGoalCommand(CommandTerm):
                 translations=self.region_box_vis_translations,
                 scales=self.region_box_vis_scales,
             )
+        if hasattr(self, "guidance_path_marker"):
+            guidance_vis_points = self._get_guidance_vis_points_for_env(env_index=0)
+            if guidance_vis_points is not None:
+                self.guidance_path_marker.visualize(translations=guidance_vis_points)
 
         arrow_position = self.robot.data.root_pos_w.clone()
         arrow_position[:, 2] += 0.3
