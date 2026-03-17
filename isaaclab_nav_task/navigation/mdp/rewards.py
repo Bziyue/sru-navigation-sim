@@ -84,14 +84,15 @@ def reach_goal_xyz(
         Dense reward based on distance to goal.
     """
     goal_cmd_generator: RobotNavigationGoalCommand = env.command_manager._terms[command_name]
+    asset: Articulation = env.scene["robot"]
 
     t = env.episode_length_buf
     T = env.max_episode_length
 
     if flat:
-        xyz_error = torch.norm(goal_cmd_generator._get_unscaled_command()[:, :2], dim=1)
+        xyz_error = torch.norm(asset.data.root_pos_w[:, :2] - goal_cmd_generator.goal_position_world[:, :2], dim=1)
     else:
-        xyz_error = torch.norm(goal_cmd_generator._get_unscaled_command(), dim=1)
+        xyz_error = torch.norm(asset.data.root_pos_w[:, :3] - goal_cmd_generator.goal_position_world[:, :3], dim=1)
 
     reward = 1 / (1 + torch.square(xyz_error / sigmoid)) / T_r
 
@@ -137,20 +138,51 @@ def backward_movement_penalty(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg 
 def guidance_progress_reward(
     env: ManagerBasedRLEnv,
     command_name: str,
-    clamp_delta: float = 0.5,
+    clamp_delta: float = 0.3,
+    lateral_sigma: float = 0.6,
 ) -> torch.Tensor:
-    """Reward positive progress along the current guidance centerline."""
+    """Reward positive progress along the guidance centerline.
+
+    The reward only considers forward progress and is down-weighted when the robot drifts
+    away from the guidance corridor.
+    """
     goal_cmd_generator = env.command_manager._terms[command_name]
-    progress_delta = torch.clamp(goal_cmd_generator.guidance_progress_delta, min=-clamp_delta, max=clamp_delta)
-    return progress_delta / max(clamp_delta, 1e-6)
+    current_progress, lateral_error = goal_cmd_generator._project_guidance_state(
+        positions_xy=goal_cmd_generator.robot.data.root_pos_w[:, :2],
+        guidance_ids=goal_cmd_generator.current_guidance_ids,
+    )
+    progress_delta = current_progress - goal_cmd_generator.guidance_progress
+    positive_delta = torch.clamp(progress_delta, min=0.0, max=clamp_delta)
+    corridor_alignment = torch.exp(-torch.square(lateral_error / max(lateral_sigma, 1e-6)))
+    return (positive_delta / max(clamp_delta, 1e-6)) * corridor_alignment
+
+
+def guidance_wrong_way_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    clamp_delta: float = 0.2,
+) -> torch.Tensor:
+    """Penalize moving backward along the guidance centerline."""
+    goal_cmd_generator = env.command_manager._terms[command_name]
+    current_progress, _ = goal_cmd_generator._project_guidance_state(
+        positions_xy=goal_cmd_generator.robot.data.root_pos_w[:, :2],
+        guidance_ids=goal_cmd_generator.current_guidance_ids,
+    )
+    progress_delta = current_progress - goal_cmd_generator.guidance_progress
+    backward_delta = torch.clamp(-progress_delta, min=0.0, max=clamp_delta)
+    return backward_delta / max(clamp_delta, 1e-6)
 
 
 def guidance_lateral_error_penalty(
     env: ManagerBasedRLEnv,
     command_name: str,
-    sigma: float = 0.75,
+    sigma: float = 0.6,
 ) -> torch.Tensor:
-    """Penalize lateral deviation from the guidance centerline."""
+    """Penalize lateral deviation from the guidance centerline with smooth saturation."""
     goal_cmd_generator = env.command_manager._terms[command_name]
-    normalized_error = goal_cmd_generator.guidance_lateral_error / max(sigma, 1e-6)
-    return torch.tanh(normalized_error)
+    _, lateral_error = goal_cmd_generator._project_guidance_state(
+        positions_xy=goal_cmd_generator.robot.data.root_pos_w[:, :2],
+        guidance_ids=goal_cmd_generator.current_guidance_ids,
+    )
+    normalized_error = lateral_error / max(sigma, 1e-6)
+    return 1.0 - torch.exp(-0.5 * torch.square(normalized_error))

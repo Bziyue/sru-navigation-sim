@@ -635,18 +635,42 @@ class StaticRegionGoalCommand(CommandTerm):
             )
 
     def _project_guidance_state(self, positions_xy: torch.Tensor, guidance_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Project positions onto the current guidance polyline using segment-wise projection.
+
+        This is more stable than snapping to the nearest sampled waypoint, especially around
+        bends and densely sampled regions, because progress is measured continuously along the
+        polyline rather than jumping between discrete vertices.
+        """
         path_xy = self.guidance_paths_xy[guidance_ids]
         arc_lengths = self.guidance_arc_lengths[guidance_ids]
         path_lengths = self.guidance_path_lengths[guidance_ids]
 
-        deltas = path_xy - positions_xy.unsqueeze(1)
+        start_points = path_xy[:, :-1, :]
+        end_points = path_xy[:, 1:, :]
+        segment_vectors = end_points - start_points
+        segment_lengths_sq = torch.sum(segment_vectors * segment_vectors, dim=-1).clamp_min(1e-9)
+        segment_lengths = torch.sqrt(segment_lengths_sq)
+
+        rel_positions = positions_xy.unsqueeze(1) - start_points
+        raw_t = torch.sum(rel_positions * segment_vectors, dim=-1) / segment_lengths_sq
+        clamped_t = torch.clamp(raw_t, min=0.0, max=1.0)
+        projected_points = start_points + clamped_t.unsqueeze(-1) * segment_vectors
+
+        deltas = positions_xy.unsqueeze(1) - projected_points
         distances_sq = torch.sum(deltas * deltas, dim=-1)
-        max_points = path_xy.shape[1]
-        valid_mask = torch.arange(max_points, device=self.device).unsqueeze(0) < path_lengths.unsqueeze(1)
-        distances_sq = torch.where(valid_mask, distances_sq, torch.full_like(distances_sq, float("inf")))
-        closest_indices = torch.argmin(distances_sq, dim=1)
-        lateral_error = torch.sqrt(torch.gather(distances_sq, 1, closest_indices.unsqueeze(1)).squeeze(1).clamp_min(0.0))
-        progress = torch.gather(arc_lengths, 1, closest_indices.unsqueeze(1)).squeeze(1)
+
+        max_segments = start_points.shape[1]
+        valid_segment_mask = torch.arange(max_segments, device=self.device).unsqueeze(0) < (path_lengths - 1).unsqueeze(1)
+        distances_sq = torch.where(valid_segment_mask, distances_sq, torch.full_like(distances_sq, float("inf")))
+
+        closest_segment_indices = torch.argmin(distances_sq, dim=1)
+        lateral_error = torch.sqrt(
+            torch.gather(distances_sq, 1, closest_segment_indices.unsqueeze(1)).squeeze(1).clamp_min(0.0)
+        )
+        segment_start_arc = torch.gather(arc_lengths[:, :-1], 1, closest_segment_indices.unsqueeze(1)).squeeze(1)
+        closest_segment_t = torch.gather(clamped_t, 1, closest_segment_indices.unsqueeze(1)).squeeze(1)
+        closest_segment_length = torch.gather(segment_lengths, 1, closest_segment_indices.unsqueeze(1)).squeeze(1)
+        progress = segment_start_arc + closest_segment_t * closest_segment_length
         return progress, lateral_error
 
     def _get_guidance_vis_points_for_env(self, env_index: int = 0) -> torch.Tensor | None:

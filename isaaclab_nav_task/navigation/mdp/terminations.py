@@ -53,12 +53,13 @@ def time_out_navigation(
     from isaaclab_nav_task.navigation.mdp.navigation.goal_commands import RobotNavigationGoalCommand
 
     goal_cmd_generator: RobotNavigationGoalCommand = env.command_manager._terms[goal_cmd_name]
+    asset: Articulation = env.scene["robot"]
 
     termination = env.episode_length_buf >= env.max_episode_length
 
     env_ids = torch.where(termination)[0]
 
-    distance_goal = torch.norm(goal_cmd_generator._get_unscaled_command()[:, :2], dim=1)
+    distance_goal = torch.norm(asset.data.root_pos_w[:, :2] - goal_cmd_generator.goal_position_world[:, :2], dim=1)
 
     # update time at goal
     goal_cmd_generator.time_at_goal[distance_goal < distance_threshold] += 1 * env.step_dt
@@ -150,7 +151,7 @@ def at_goal_navigation(
     goal_cmd_generator: RobotNavigationGoalCommand = env.command_manager._terms.get(goal_cmd_name)
 
     # Calculate distance to goal
-    xy_error = torch.norm(goal_cmd_generator._get_unscaled_command()[:, :2], dim=1)
+    xy_error = torch.norm(asset.data.root_pos_w[:, :2] - goal_cmd_generator.goal_position_world[:, :2], dim=1)
 
     # Check conditions for termination
     at_goal = xy_error < distance_threshold

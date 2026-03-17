@@ -235,13 +235,18 @@ class DroneRewardsCfg:
     action_rate_l1 = RewTerm(func=mdp.action_rate_l1, weight=-0.05)
     guidance_progress = RewTerm(
         func=mdp.guidance_progress_reward,
-        weight=1.0,
-        params={"command_name": "robot_goal", "clamp_delta": 0.5},
+        weight=0.7,
+        params={"command_name": "robot_goal", "clamp_delta": 0.3, "lateral_sigma": 0.6},
+    )
+    guidance_wrong_way = RewTerm(
+        func=mdp.guidance_wrong_way_penalty,
+        weight=-0.3,
+        params={"command_name": "robot_goal", "clamp_delta": 0.2},
     )
     guidance_lateral_error = RewTerm(
         func=mdp.guidance_lateral_error_penalty,
-        weight=-0.15,
-        params={"command_name": "robot_goal", "sigma": 0.75},
+        weight=-0.25,
+        params={"command_name": "robot_goal", "sigma": 0.6},
     )
     episode_termination = RewTerm(func=mdp.is_terminated, weight=-50.0)
     reach_goal_xy_soft = RewTerm(
