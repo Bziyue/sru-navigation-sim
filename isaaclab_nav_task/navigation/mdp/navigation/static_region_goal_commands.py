@@ -436,6 +436,7 @@ class StaticRegionGoalCommand(CommandTerm):
         self.guidance_pair_ids = guidance_pair_ids.to(self.device)
         self.num_precomputed_guidance_paths = int(self.guidance_pair_ids.shape[0])
         self.num_precomputed_region_pairs = self.num_precomputed_guidance_paths // 2
+        self._validate_guidance_region_alignment()
         print(
             "[StaticRegionGoalCommand] Precomputed "
             f"{self.num_precomputed_guidance_paths} directed guidance trajectories "
@@ -562,6 +563,77 @@ class StaticRegionGoalCommand(CommandTerm):
             sampled_points[local_idx] = region_points[point_index]
         return sampled_points
 
+    def _points_inside_regions(
+        self,
+        points_xy: torch.Tensor,
+        region_ids: torch.Tensor,
+        tolerance: float = 1e-4,
+    ) -> torch.Tensor:
+        """Check whether points lie inside their corresponding region boxes."""
+        xy_min = self.region_xy_min[region_ids] - tolerance
+        xy_max = self.region_xy_max[region_ids] + tolerance
+        return torch.all((points_xy >= xy_min) & (points_xy <= xy_max), dim=1)
+
+    def _validate_guidance_region_alignment(self) -> None:
+        """Validate that guidance endpoints and safe point pools match the region pairing."""
+        referenced_region_ids = torch.unique(self.guidance_pair_ids.reshape(-1))
+        empty_region_ids = [
+            int(region_id.item()) for region_id in referenced_region_ids if len(self.region_safe_points[int(region_id.item())]) == 0
+        ]
+        if empty_region_ids:
+            empty_region_names = [self.region_names[region_id] for region_id in empty_region_ids]
+            raise RuntimeError(
+                "Guidance trajectories reference regions without any safe spawn/goal points: "
+                + ", ".join(
+                    f"{region_id}:{region_name}"
+                    for region_id, region_name in zip(empty_region_ids, empty_region_names, strict=True)
+                )
+            )
+
+        path_ids = torch.arange(len(self.guidance_pair_ids), device=self.device)
+        start_points = self.guidance_paths_xy[path_ids, 0]
+        end_indices = self.guidance_path_lengths - 1
+        end_points = self.guidance_paths_xy[path_ids, end_indices]
+        source_region_ids = self.guidance_pair_ids[:, 0]
+        target_region_ids = self.guidance_pair_ids[:, 1]
+
+        start_ok = self._points_inside_regions(start_points, source_region_ids)
+        end_ok = self._points_inside_regions(end_points, target_region_ids)
+        invalid_ids = torch.where(~(start_ok & end_ok))[0]
+        if len(invalid_ids) > 0:
+            example_id = int(invalid_ids[0].item())
+            source_id = int(source_region_ids[example_id].item())
+            target_id = int(target_region_ids[example_id].item())
+            raise RuntimeError(
+                "Guidance trajectory endpoints do not match their source/target regions. "
+                f"Example path id {example_id}: "
+                f"{source_id}:{self.region_names[source_id]} -> {target_id}:{self.region_names[target_id]}."
+            )
+
+    def _apply_spawn_state_to_robot(self, env_ids: torch.Tensor, spawn_points: torch.Tensor) -> None:
+        """Write the freshly sampled spawn positions back to the robot root state.
+
+        The environment reset events run before command resampling, so updating only
+        ``env.scene.env_origins`` is too late for the robot pose reset in the same
+        episode. We therefore keep the sampled yaw from the earlier reset event but
+        overwrite the root position and zero the root velocity here so the physical
+        robot starts from the same spawn point used by the command term.
+        """
+        current_root_quat = self.robot.data.root_quat_w[env_ids].clone()
+        root_pose = torch.cat((spawn_points, current_root_quat), dim=-1)
+        root_velocity = torch.zeros((len(env_ids), 6), dtype=torch.float32, device=self.device)
+
+        self.robot.write_root_pose_to_sim(root_pose, env_ids=env_ids)
+        self.robot.write_root_velocity_to_sim(root_velocity, env_ids=env_ids)
+        self.spawn_heading_world[env_ids] = math_utils.euler_xyz_from_quat(current_root_quat)[2]
+        spawn_reset_error = torch.norm(self.robot.data.root_pos_w[env_ids] - spawn_points, dim=1)
+        if torch.any(spawn_reset_error > 1e-4):
+            max_error = float(torch.max(spawn_reset_error).item())
+            raise RuntimeError(
+                "Failed to align robot root pose with sampled spawn positions during reset. "
+                f"Maximum position error: {max_error:.6f} m."
+            )
+
     def _project_guidance_state(self, positions_xy: torch.Tensor, guidance_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         path_xy = self.guidance_paths_xy[guidance_ids]
         arc_lengths = self.guidance_arc_lengths[guidance_ids]
@@ -627,12 +699,17 @@ class StaticRegionGoalCommand(CommandTerm):
 
         spawn_points = self._sample_safe_points_from_regions(source_region_ids)
         goal_points = self._sample_safe_points_from_regions(target_region_ids)
+        if not torch.all(self._points_inside_regions(spawn_points[:, :2], source_region_ids)):
+            raise RuntimeError("Sampled spawn points do not lie inside their source regions.")
+        if not torch.all(self._points_inside_regions(goal_points[:, :2], target_region_ids)):
+            raise RuntimeError("Sampled goal points do not lie inside their target regions.")
         self.spawn_region_ids[env_ids_tensor] = source_region_ids
         self.goal_region_ids[env_ids_tensor] = target_region_ids
         self.current_guidance_ids[env_ids_tensor] = sampled_guidance_indices
         self.spawn_position_world[env_ids_tensor] = spawn_points
         self.goal_position_world[env_ids_tensor] = goal_points
         self.env.scene.env_origins[env_ids_tensor] = spawn_points
+        self._apply_spawn_state_to_robot(env_ids_tensor, spawn_points)
         self.previous_position[env_ids_tensor] = spawn_points
         self.initial_distance_to_goal[env_ids_tensor] = torch.norm(goal_points - spawn_points, dim=1)
         self.closest_distance_to_goal[env_ids_tensor] = self.initial_distance_to_goal[env_ids_tensor]

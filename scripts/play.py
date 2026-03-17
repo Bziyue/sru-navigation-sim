@@ -28,9 +28,25 @@ Note: Automatically finds latest checkpoint if --checkpoint not specified.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from isaaclab.app import AppLauncher
+
+
+def _prepend_workspace_packages():
+    """Prefer the local workspace packages over stale site-packages installs."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    sim_root = os.path.dirname(script_dir)
+    workspace_root = os.path.dirname(sim_root)
+    learning_root = os.path.join(workspace_root, "sru-navigation-learning")
+
+    for path in [learning_root, sim_root]:
+        if os.path.isdir(path) and path not in sys.path:
+            sys.path.insert(0, path)
+
+
+_prepend_workspace_packages()
 
 # Add argparse arguments
 parser = argparse.ArgumentParser(description="Play a trained navigation policy with RSL-RL.")
@@ -56,18 +72,24 @@ simulation_app = app_launcher.app
 
 # Import after launching simulation
 import gymnasium as gym
-import os
 import re
 import torch
 
+import isaaclab.sim as sim_utils
 from rsl_rl.runners import OnPolicyRunner
 
 # Import Isaac Lab extensions
 import isaaclab_tasks  # noqa: F401
 import isaaclab_nav_task  # noqa: F401
+import isaaclab_nav_task.navigation.config.drone  # noqa: F401
 
 from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper, export_policy_as_onnx
+
+
+PLAY_STATUS_INTERVAL = 20
+TRAIL_POINT_CAP = 400
 
 
 def find_latest_checkpoint(log_path: str, checkpoint_pattern: str = "model_.*.pt") -> str:
@@ -210,6 +232,176 @@ def export_policy_onnx(runner: OnPolicyRunner, checkpoint_path: str):
     print(f"[INFO] ONNX export complete!")
 
 
+def split_actor_observations(observations, extras=None):
+    """Handle legacy `(obs, extras)` and IsaacLab TensorDict observations."""
+    if isinstance(observations, tuple) and len(observations) == 2 and extras is None:
+        observations, extras = observations
+
+    if hasattr(observations, "keys"):
+        keys = set(observations.keys())
+        if "policy" in keys:
+            return observations["policy"]
+        if "observations" in keys:
+            obs_group = observations["observations"]
+            if hasattr(obs_group, "get"):
+                return obs_group.get("policy", obs_group)
+            return obs_group
+
+    return observations
+
+
+def create_drone_debug_marker() -> VisualizationMarkers:
+    cfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/Play/drone_marker",
+        markers={
+            "disc": sim_utils.CylinderCfg(
+                radius=0.45,
+                height=0.03,
+                axis="Z",
+                visual_material=sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=(1.0, 0.05, 0.05),
+                    opacity=0.8,
+                ),
+            ),
+        },
+    )
+    marker = VisualizationMarkers(cfg)
+    marker.set_visibility(True)
+    return marker
+
+
+def create_point_marker(
+    prim_path: str,
+    color: tuple[float, float, float],
+    radius: float,
+    opacity: float = 0.9,
+) -> VisualizationMarkers:
+    cfg = VisualizationMarkersCfg(
+        prim_path=prim_path,
+        markers={
+            "point": sim_utils.SphereCfg(
+                radius=radius,
+                visual_material=sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=color,
+                    opacity=opacity,
+                ),
+            ),
+        },
+    )
+    marker = VisualizationMarkers(cfg)
+    marker.set_visibility(True)
+    return marker
+
+
+def get_robot_goal_term(env):
+    return getattr(env.unwrapped.command_manager, "_terms", {}).get("robot_goal")
+
+
+def get_current_episode_signature(env) -> tuple[int, int, int, float, float]:
+    command_term = get_robot_goal_term(env)
+    if command_term is None:
+        return (-1, -1, -1, 0.0, 0.0)
+
+    guidance_id = int(command_term.current_guidance_ids[0].detach().cpu().item())
+    spawn_region = int(command_term.spawn_region_ids[0].detach().cpu().item())
+    goal_region = int(command_term.goal_region_ids[0].detach().cpu().item())
+    goal = command_term.goal_position_world[0].detach().cpu()
+    return (guidance_id, spawn_region, goal_region, round(float(goal[0]), 3), round(float(goal[1]), 3))
+
+
+def get_guidance_path_points(env, max_points: int = 240) -> torch.Tensor | None:
+    command_term = get_robot_goal_term(env)
+    if command_term is None:
+        return None
+
+    guidance_id = int(command_term.current_guidance_ids[0].detach().cpu().item())
+    path_length = int(command_term.guidance_path_lengths[guidance_id].detach().cpu().item())
+    if path_length <= 0:
+        return None
+
+    path_xy = command_term.guidance_paths_xy[guidance_id, :path_length]
+    if path_length > max_points:
+        sample_idx = torch.linspace(0, path_length - 1, max_points, device=path_xy.device)
+        path_xy = path_xy[sample_idx.round().long()]
+
+    points = torch.zeros((len(path_xy), 3), dtype=torch.float32, device=path_xy.device)
+    points[:, :2] = path_xy
+    points[:, 2] = float(command_term.flight_height) + 0.06
+    return points
+
+
+def build_episode_static_points(env) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | tuple[None, None, None]:
+    command_term = get_robot_goal_term(env)
+    if command_term is None:
+        return None, None, None
+
+    spawn_region = int(command_term.spawn_region_ids[0].detach().cpu().item())
+    goal_region = int(command_term.goal_region_ids[0].detach().cpu().item())
+
+    spawn_center = torch.zeros((1, 3), dtype=torch.float32, device=command_term.region_centers.device)
+    spawn_center[0, :2] = command_term.region_centers[spawn_region]
+    spawn_center[0, 2] = float(command_term.flight_height) + 0.08
+
+    goal_center = torch.zeros((1, 3), dtype=torch.float32, device=command_term.region_centers.device)
+    goal_center[0, :2] = command_term.region_centers[goal_region]
+    goal_center[0, 2] = float(command_term.flight_height) + 0.08
+
+    goal_point = command_term.goal_position_world[0:1].clone()
+    goal_point[:, 2] += 0.10
+    return spawn_center, goal_center, goal_point
+
+
+def update_drone_debug_marker(marker: VisualizationMarkers, env):
+    robot = env.unwrapped.scene["robot"]
+    marker_pos = robot.data.root_pos_w[:, :3].clone()
+    marker_pos[:, 2] -= 0.12
+    marker.visualize(translations=marker_pos)
+
+
+def update_trail_marker(marker: VisualizationMarkers, trail_points: list[torch.Tensor]):
+    if not trail_points:
+        return
+
+    trail = torch.stack(trail_points, dim=0)
+    if len(trail) > TRAIL_POINT_CAP:
+        sample_idx = torch.linspace(0, len(trail) - 1, TRAIL_POINT_CAP, device=trail.device)
+        trail = trail[sample_idx.round().long()]
+    marker.visualize(translations=trail)
+
+
+def print_play_status(env, step_count: int):
+    base_env = env.unwrapped
+    robot = base_env.scene["robot"]
+    pos = robot.data.root_pos_w[0].detach().cpu()
+    vel = robot.data.root_lin_vel_w[0].detach().cpu()
+    yaw_rate = float(robot.data.root_ang_vel_b[0, 2].detach().cpu().item())
+
+    status = (
+        f"[PLAY step={step_count}] "
+        f"pos=({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}) "
+        f"vel=({vel[0]:.2f}, {vel[1]:.2f}, {vel[2]:.2f}) "
+        f"yaw_rate={yaw_rate:.2f}"
+    )
+
+    command_term = getattr(base_env.command_manager, "_terms", {}).get("robot_goal")
+    if command_term is not None:
+        goal = command_term.goal_position_world[0].detach().cpu()
+        distance_to_goal = float(command_term.distance_to_goal[0].detach().cpu().item())
+        guidance_progress = float(command_term.guidance_progress[0].detach().cpu().item())
+        guidance_lateral_error = float(command_term.guidance_lateral_error[0].detach().cpu().item())
+        spawn_region = int(command_term.spawn_region_ids[0].detach().cpu().item())
+        goal_region = int(command_term.goal_region_ids[0].detach().cpu().item())
+        status += (
+            f" goal=({goal[0]:.2f}, {goal[1]:.2f}, {goal[2]:.2f}) "
+            f"dist={distance_to_goal:.2f} "
+            f"guidance_s={guidance_progress:.2f} "
+            f"guidance_lat={guidance_lateral_error:.2f} "
+            f"regions={spawn_region}->{goal_region}"
+        )
+
+    print(status, flush=True)
+
+
 def main():
     """Play navigation policy with RSL-RL."""
     # Parse command-line arguments
@@ -254,17 +446,93 @@ def main():
 
     # Obtain policy for inference
     policy = runner.get_inference_policy(device=env.unwrapped.device)
+    drone_marker = create_drone_debug_marker()
+    trail_marker = create_point_marker(
+        prim_path="/Visuals/Play/drone_trail",
+        color=(1.0, 0.3, 0.1),
+        radius=0.045,
+        opacity=0.85,
+    )
+    spawn_center_marker = create_point_marker(
+        prim_path="/Visuals/Play/spawn_region_center",
+        color=(0.1, 0.8, 1.0),
+        radius=0.14,
+        opacity=0.85,
+    )
+    goal_center_marker = create_point_marker(
+        prim_path="/Visuals/Play/goal_region_center",
+        color=(1.0, 0.85, 0.1),
+        radius=0.14,
+        opacity=0.85,
+    )
+    goal_point_marker = create_point_marker(
+        prim_path="/Visuals/Play/goal_point",
+        color=(1.0, 0.0, 1.0),
+        radius=0.10,
+        opacity=0.9,
+    )
+    guidance_path_marker = create_point_marker(
+        prim_path="/Visuals/Play/guidance_path",
+        color=(0.15, 0.95, 0.25),
+        radius=0.05,
+        opacity=0.8,
+    )
 
     # Reset environment
-    obs, _ = env.get_observations()
+    obs = split_actor_observations(env.get_observations())
+    update_drone_debug_marker(drone_marker, env)
+    episode_signature = get_current_episode_signature(env)
+    current_pos = env.unwrapped.scene["robot"].data.root_pos_w[0, :3].clone()
+    current_pos[2] -= 0.02
+    trail_points = [current_pos]
+    update_trail_marker(trail_marker, trail_points)
+    spawn_center, goal_center, goal_point = build_episode_static_points(env)
+    if spawn_center is not None:
+        spawn_center_marker.visualize(translations=spawn_center)
+    if goal_center is not None:
+        goal_center_marker.visualize(translations=goal_center)
+    if goal_point is not None:
+        goal_point_marker.visualize(translations=goal_point)
+    guidance_points = get_guidance_path_points(env)
+    if guidance_points is not None:
+        guidance_path_marker.visualize(translations=guidance_points)
+    print_play_status(env, step_count=0)
 
     # Simulate environment
+    step_count = 0
     while simulation_app.is_running():
         # Run policy
         with torch.inference_mode():
             actions = policy(obs)
         # Step environment
-        obs, _, _, _ = env.step(actions)
+        obs_data, _, _, infos = env.step(actions)
+        obs = split_actor_observations(obs_data, infos)
+        step_count += 1
+        update_drone_debug_marker(drone_marker, env)
+        new_signature = get_current_episode_signature(env)
+        if new_signature != episode_signature:
+            episode_signature = new_signature
+            current_pos = env.unwrapped.scene["robot"].data.root_pos_w[0, :3].clone()
+            current_pos[2] -= 0.02
+            trail_points = [current_pos]
+            spawn_center, goal_center, goal_point = build_episode_static_points(env)
+            if spawn_center is not None:
+                spawn_center_marker.visualize(translations=spawn_center)
+            if goal_center is not None:
+                goal_center_marker.visualize(translations=goal_center)
+            if goal_point is not None:
+                goal_point_marker.visualize(translations=goal_point)
+            guidance_points = get_guidance_path_points(env)
+            if guidance_points is not None:
+                guidance_path_marker.visualize(translations=guidance_points)
+        else:
+            current_pos = env.unwrapped.scene["robot"].data.root_pos_w[0, :3].clone()
+            current_pos[2] -= 0.02
+            trail_points.append(current_pos)
+
+        update_trail_marker(trail_marker, trail_points)
+        if step_count % PLAY_STATUS_INTERVAL == 0:
+            print_play_status(env, step_count)
 
     # Close the environment
     env.close()

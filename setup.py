@@ -13,7 +13,7 @@ and depth-based reinforcement learning for legged robot navigation.
 import os
 import toml
 
-from setuptools import setup
+from setuptools import find_packages, setup
 
 # Obtain the extension data from the extension.toml file
 EXTENSION_PATH = os.path.dirname(os.path.realpath(__file__))
@@ -49,7 +49,7 @@ setup(
     python_requires=">=3.10",
     install_requires=INSTALL_REQUIRES,
     dependency_links=PYTORCH_INDEX_URL,
-    packages=["isaaclab_nav_task"],
+    packages=find_packages(include=["isaaclab_nav_task", "isaaclab_nav_task.*"]),
     classifiers=[
         "Natural Language :: English",
         "Programming Language :: Python :: 3.10",
