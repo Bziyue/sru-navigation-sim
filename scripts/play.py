@@ -83,9 +83,10 @@ import isaaclab_tasks  # noqa: F401
 import isaaclab_nav_task  # noqa: F401
 import isaaclab_nav_task.navigation.config.drone  # noqa: F401
 
-from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.envs import DirectMARLEnv, ManagerBasedRLEnvCfg, multi_agent_to_single_agent
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper, export_policy_as_onnx
+from isaaclab_nav_task.navigation.marl import parameter_sharing_multi_agent_to_single_agent
 
 
 PLAY_STATUS_INTERVAL = 20
@@ -419,6 +420,11 @@ def main():
 
     # Create the environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    if isinstance(env.unwrapped, DirectMARLEnv):
+        if getattr(env.unwrapped.cfg, "use_parameter_sharing_wrapper", False):
+            env = parameter_sharing_multi_agent_to_single_agent(env)
+        else:
+            env = multi_agent_to_single_agent(env)
     # Wrap the environment
     env = RslRlVecEnvWrapper(env)
 

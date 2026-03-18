@@ -70,12 +70,13 @@ from rsl_rl.runners import OnPolicyRunner
 import isaaclab_tasks  # noqa: F401
 import isaaclab_nav_task  # noqa: F401
 
-from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.envs import DirectMARLEnv, ManagerBasedRLEnvCfg, multi_agent_to_single_agent
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_yaml
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
+from isaaclab_nav_task.navigation.marl import parameter_sharing_multi_agent_to_single_agent
 
 # Set torch backends for better performance
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -127,6 +128,11 @@ def main():
 
     # Create the environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    if isinstance(env.unwrapped, DirectMARLEnv):
+        if getattr(env.unwrapped.cfg, "use_parameter_sharing_wrapper", False):
+            env = parameter_sharing_multi_agent_to_single_agent(env)
+        else:
+            env = multi_agent_to_single_agent(env)
     # Wrap the environment
     env = RslRlVecEnvWrapper(env)
 
