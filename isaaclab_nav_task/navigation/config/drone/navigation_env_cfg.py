@@ -101,6 +101,7 @@ class DroneCommandsCfg:
         spawn_polygon_csv_path=os.path.join(STATIC_SCAN_DIR, "polygon_coords.csv"),
         guidance_paths_data_path=os.path.join(STATIC_SCAN_DIR, "all_region_pair_paths.txt"),
         guidance_trajectories_data_path=os.path.join(STATIC_SCAN_DIR, "all_region_pair_trajectories.json"),
+        precomputed_safe_points_path=None,
         flight_height=1.2,
         point_clearance=0.15,
         safe_point_grid_spacing=0.25,

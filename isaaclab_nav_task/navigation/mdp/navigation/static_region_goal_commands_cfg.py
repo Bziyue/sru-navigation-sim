@@ -20,6 +20,7 @@ class StaticRegionGoalCommandCfg(CommandTermCfg):
     spawn_polygon_csv_path: str | None = None
     guidance_paths_data_path: str | None = None
     guidance_trajectories_data_path: str | None = None
+    precomputed_safe_points_path: str | None = None
     guidance_trajectory_eval_dt: float = 0.05
     guidance_arc_length_spacing: float = 0.2
     flight_height: float = 1.2

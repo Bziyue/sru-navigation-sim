@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 _RECT_NAME_RE = re.compile(r"^Rectangle:\s*(.+)$")
 _CORNER_RE = re.compile(r"Corner\s+\d+:\s+X:\s*([-+0-9.]+),\s*Y:\s*([-+0-9.]+),\s*Z:\s*([-+0-9.]+)")
-_REGION_POINT_SET_CACHE: dict[tuple[str, str, float, float, float], tuple[list[dict], np.ndarray]] = {}
+_REGION_POINT_SET_CACHE: dict[tuple, tuple[list[dict], np.ndarray]] = {}
 
 
 class SuccessRateTracker:
@@ -184,12 +184,69 @@ def _sample_region_safe_grid_points(
     return candidate_points[np.asarray(distances) >= point_clearance].astype(np.float32, copy=False)
 
 
+def _load_precomputed_region_point_sets(
+    surface_bbox_data_path: str,
+    precomputed_safe_points_path: str,
+    flight_height: float,
+) -> tuple[list[dict], np.ndarray]:
+    base_regions = _load_region_boxes(surface_bbox_data_path)
+    payload = np.load(precomputed_safe_points_path)
+
+    region_names = np.asarray(payload["region_names"]).astype(str).tolist()
+    region_xy_min = np.asarray(payload["region_xy_min"], dtype=np.float32)
+    region_xy_max = np.asarray(payload["region_xy_max"], dtype=np.float32)
+    region_floor_z = np.asarray(payload["region_floor_z"], dtype=np.float32)
+    region_start_indices = np.asarray(payload["region_start_indices"], dtype=np.int64)
+    region_counts = np.asarray(payload["region_counts"], dtype=np.int64)
+    points_xyz = np.asarray(payload["points_xyz"], dtype=np.float32)
+
+    if len(base_regions) != len(region_names):
+        raise RuntimeError(
+            "Precomputed safe point file does not match the configured region box count: "
+            f"{len(region_names)} vs {len(base_regions)}."
+        )
+
+    loaded_regions: list[dict] = []
+    all_safe_points: list[np.ndarray] = []
+    for region_id, base_region in enumerate(base_regions):
+        if base_region["name"] != region_names[region_id]:
+            raise RuntimeError(
+                "Region order mismatch between bbox file and precomputed safe point file: "
+                f"bbox[{region_id}]={base_region['name']} vs safe_points[{region_id}]={region_names[region_id]}."
+            )
+
+        if not np.allclose(base_region["xy_min"], region_xy_min[region_id], atol=1e-3):
+            raise RuntimeError(f"Region xy_min mismatch for region {region_id}:{base_region['name']}.")
+        if not np.allclose(base_region["xy_max"], region_xy_max[region_id], atol=1e-3):
+            raise RuntimeError(f"Region xy_max mismatch for region {region_id}:{base_region['name']}.")
+        if not np.isclose(base_region["floor_z"], region_floor_z[region_id], atol=1e-3):
+            raise RuntimeError(f"Region floor_z mismatch for region {region_id}:{base_region['name']}.")
+
+        start = int(region_start_indices[region_id])
+        count = int(region_counts[region_id])
+        safe_points = points_xyz[start : start + count].astype(np.float32, copy=False)
+        region = dict(base_region)
+        center_z = float(np.mean(safe_points[:, 2])) if len(safe_points) > 0 else float(flight_height)
+        region["center"] = np.array([region["center_xy"][0], region["center_xy"][1], center_z], dtype=np.float32)
+        region["safe_points"] = safe_points
+        loaded_regions.append(region)
+        if len(safe_points) > 0:
+            all_safe_points.append(safe_points)
+
+    if not all_safe_points:
+        raise RuntimeError(f"No safe points were loaded from {precomputed_safe_points_path}.")
+
+    safe_points = np.concatenate(all_safe_points, axis=0)
+    return loaded_regions, safe_points.astype(np.float32, copy=False)
+
+
 def _build_region_point_sets(
     surface_bbox_data_path: str,
     map_mesh_prim_path: str,
     flight_height: float,
     point_clearance: float,
     grid_spacing: float,
+    precomputed_safe_points_path: str | None = None,
 ) -> tuple[list[dict], np.ndarray]:
     cache_key = (
         surface_bbox_data_path,
@@ -197,9 +254,19 @@ def _build_region_point_sets(
         float(flight_height),
         float(point_clearance),
         float(grid_spacing),
+        precomputed_safe_points_path,
     )
     if cache_key in _REGION_POINT_SET_CACHE:
         return _REGION_POINT_SET_CACHE[cache_key]
+
+    if precomputed_safe_points_path is not None:
+        region_point_sets, safe_points = _load_precomputed_region_point_sets(
+            surface_bbox_data_path=surface_bbox_data_path,
+            precomputed_safe_points_path=precomputed_safe_points_path,
+            flight_height=flight_height,
+        )
+        _REGION_POINT_SET_CACHE[cache_key] = (region_point_sets, safe_points)
+        return region_point_sets, safe_points
 
     mesh = _trimesh_from_stage_mesh(map_mesh_prim_path)
     occupied_kdtree = _build_occupied_kdtree(mesh)
@@ -397,6 +464,7 @@ class StaticRegionGoalCommand(CommandTerm):
             flight_height=float(cfg.flight_height),
             point_clearance=float(cfg.point_clearance),
             grid_spacing=float(cfg.safe_point_grid_spacing),
+            precomputed_safe_points_path=cfg.precomputed_safe_points_path,
         )
         self.region_names = [region["name"] for region in region_point_sets]
         self.region_xy_min = torch.as_tensor(
