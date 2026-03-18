@@ -75,6 +75,12 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
         self._goal_center_w = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
         self._goal_hold_steps = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
         self._required_steps_at_goal = max(1, int(round(self.cfg.required_goal_hold_time_s / self.step_dt)))
+        self._curriculum_stage_index = 0
+        self._curriculum_success_rate_ema = 0.0
+        self._curriculum_completed_episodes = 0
+        self._contact_failure_steps = torch.zeros(
+            (self.num_envs, self.swarm_size), dtype=torch.long, device=self.device
+        )
 
         self._guidance_progress = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
         self._prev_guidance_progress = torch.zeros_like(self._guidance_progress)
@@ -137,6 +143,9 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
         self.guidance_arc_lengths = self.guidance_arc_lengths.to(self.device)
         self.guidance_path_lengths = self.guidance_path_lengths.to(self.device)
         self.guidance_pair_ids = self.guidance_pair_ids.to(self.device)
+
+        if bool(self.cfg.curriculum_enabled):
+            self._apply_curriculum_stage(stage_index=0)
 
     def _setup_scene(self):
         setup_static_scan_world(
@@ -206,6 +215,74 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
             agent: height_scan_feat(self, self._height_sensor_cfgs[agent])
             for agent in self.agent_ids
         }
+
+    def _get_curriculum_stage_cfg(self, stage_index: int):
+        if stage_index == 0:
+            return self.cfg.curriculum_stage_1
+        if stage_index == 1:
+            return self.cfg.curriculum_stage_2
+        if stage_index == 2:
+            return self.cfg.curriculum_stage_3
+        raise ValueError(f"Unsupported curriculum stage index: {stage_index}")
+
+    def _apply_curriculum_stage(self, stage_index: int):
+        stage_cfg = self._get_curriculum_stage_cfg(stage_index)
+        self._curriculum_stage_index = stage_index
+
+        for attr_name in [
+            "body_contact_force_threshold",
+            "required_goal_hold_time_s",
+            "soft_goal_radius",
+            "tight_goal_radius",
+            "centroid_goal_completion_radius",
+            "agent_goal_completion_radius",
+            "cohesion_success_radius",
+            "reward_action_rate_l1",
+            "reward_height_action_rate_l1",
+            "reward_cruise_height_l2",
+            "reward_guidance_progress",
+            "reward_guidance_wrong_way",
+            "reward_guidance_lateral_error",
+            "reward_centroid_goal_soft",
+            "reward_centroid_goal_tight",
+            "reward_cohesion_dispersion_l1",
+            "reward_agent_collision",
+            "reward_agent_separation",
+            "reward_team_success",
+            "reward_episode_failure",
+        ]:
+            setattr(self.cfg, attr_name, getattr(stage_cfg, attr_name))
+
+        self._required_steps_at_goal = max(1, int(round(self.cfg.required_goal_hold_time_s / self.step_dt)))
+
+    def _update_curriculum(self, completed_env_ids: torch.Tensor):
+        if not bool(self.cfg.curriculum_enabled) or completed_env_ids.numel() == 0:
+            return
+
+        batch_success_rate = self._goal_success_buf[completed_env_ids].float().mean().item()
+        alpha = float(self.cfg.curriculum_success_rate_ema_alpha)
+        if self._curriculum_completed_episodes == 0:
+            self._curriculum_success_rate_ema = batch_success_rate
+        else:
+            self._curriculum_success_rate_ema = (
+                (1.0 - alpha) * self._curriculum_success_rate_ema + alpha * batch_success_rate
+            )
+        self._curriculum_completed_episodes += int(completed_env_ids.numel())
+
+        thresholds = self.cfg.curriculum_success_rate_thresholds
+        min_completed = self.cfg.curriculum_min_completed_episodes
+        if (
+            self._curriculum_stage_index == 0
+            and self._curriculum_completed_episodes >= int(min_completed[0])
+            and self._curriculum_success_rate_ema >= float(thresholds[0])
+        ):
+            self._apply_curriculum_stage(stage_index=1)
+        elif (
+            self._curriculum_stage_index == 1
+            and self._curriculum_completed_episodes >= int(min_completed[1])
+            and self._curriculum_success_rate_ema >= float(thresholds[1])
+        ):
+            self._apply_curriculum_stage(stage_index=2)
 
     def _get_observations(self) -> dict[str, dict[str, torch.Tensor]]:
         pos_w, quat_w, relative_pos_b, agent_dir = self._compute_pairwise_relative_features()
@@ -350,6 +427,7 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
         cohesion_dispersion_l1 = torch.clamp(
             agent_to_centroid_distance_xy - float(self.cfg.cohesion_soft_radius),
             min=0.0,
+            max=0.35,
         ).mean(dim=1)
 
         action_rate_l1 = torch.sum(torch.abs(self._actions - self._prev_actions), dim=-1)
@@ -406,11 +484,19 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
 
     def _contact_failures_by_agent(self) -> torch.Tensor:
         failures = torch.zeros((self.num_envs, self.swarm_size), dtype=torch.bool, device=self.device)
+        debounce_steps = max(1, int(self.cfg.contact_failure_debounce_steps))
         for agent in self.agent_ids:
             sensor = self._contact_sensors[agent]
             force_hist = sensor.data.net_forces_w_history
             force_mag = torch.norm(force_hist, dim=-1).amax(dim=1).amax(dim=1)
-            failures[:, self._agent_to_index[agent]] = force_mag > float(self.cfg.body_contact_force_threshold)
+            agent_index = self._agent_to_index[agent]
+            over_threshold = force_mag > float(self.cfg.body_contact_force_threshold)
+            self._contact_failure_steps[:, agent_index] = torch.where(
+                over_threshold,
+                self._contact_failure_steps[:, agent_index] + 1,
+                torch.zeros_like(self._contact_failure_steps[:, agent_index]),
+            )
+            failures[:, agent_index] = self._contact_failure_steps[:, agent_index] >= debounce_steps
         return failures
 
     def _fall_failure(self) -> torch.Tensor:
@@ -602,19 +688,29 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
             return
 
         shared_log = {}
-        if torch.any(self.episode_length_buf[env_ids] > 0):
+        completed_env_ids = env_ids[self.episode_length_buf[env_ids] > 0]
+        if completed_env_ids.numel() > 0:
+            self._update_curriculum(completed_env_ids)
             for key, value in self._episode_sums.items():
-                shared_log[f"Episode_Reward/{key}"] = torch.mean(value[env_ids]).item()
-                value[env_ids] = 0.0
+                shared_log[f"Episode_Reward/{key}"] = torch.mean(value[completed_env_ids]).item()
         else:
-            for value in self._episode_sums.values():
-                value[env_ids] = 0.0
+            for key in self._episode_sums:
+                shared_log[f"Episode_Reward/{key}"] = 0.0
 
-        shared_log["Episode_Termination/contact"] = torch.count_nonzero(self._contact_failure_buf[env_ids]).item()
-        shared_log["Episode_Termination/agent_collision"] = torch.count_nonzero(self._collision_failure_buf[env_ids]).item()
-        shared_log["Episode_Termination/fall"] = torch.count_nonzero(self._fall_failure_buf[env_ids]).item()
-        shared_log["Episode_Termination/goal_success"] = torch.count_nonzero(self._goal_success_buf[env_ids]).item()
-        shared_log["Episode_Termination/time_out"] = torch.count_nonzero(self._timeout_buf[env_ids]).item()
+        for value in self._episode_sums.values():
+            value[env_ids] = 0.0
+
+        stats_env_ids = completed_env_ids if completed_env_ids.numel() > 0 else env_ids
+        shared_log["Episode_Termination/contact"] = torch.count_nonzero(self._contact_failure_buf[stats_env_ids]).item()
+        shared_log["Episode_Termination/agent_collision"] = torch.count_nonzero(
+            self._collision_failure_buf[stats_env_ids]
+        ).item()
+        shared_log["Episode_Termination/fall"] = torch.count_nonzero(self._fall_failure_buf[stats_env_ids]).item()
+        shared_log["Episode_Termination/goal_success"] = torch.count_nonzero(self._goal_success_buf[stats_env_ids]).item()
+        shared_log["Episode_Termination/time_out"] = torch.count_nonzero(self._timeout_buf[stats_env_ids]).item()
+        shared_log["Curriculum/stage"] = float(self._curriculum_stage_index + 1)
+        shared_log["Curriculum/success_rate_ema"] = float(self._curriculum_success_rate_ema)
+        shared_log["Curriculum/completed_episodes"] = float(self._curriculum_completed_episodes)
 
         super()._reset_idx(env_ids)
 
@@ -646,6 +742,7 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
         self._hard_failure_buf[env_ids] = False
         self._goal_success_buf[env_ids] = False
         self._timeout_buf[env_ids] = False
+        self._contact_failure_steps[env_ids] = 0
         self._contact_failure_buf[env_ids] = False
         self._collision_failure_buf[env_ids] = False
         self._fall_failure_buf[env_ids] = False

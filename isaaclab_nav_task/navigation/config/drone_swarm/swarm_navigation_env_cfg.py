@@ -34,6 +34,30 @@ CRITIC_OBS_DIM = CRITIC_PROPRIO_DIM + 1 + HEIGHT_FEATURE_DIM + DEPTH_FEATURE_DIM
 
 
 @configclass
+class DroneSwarmCurriculumStageCfg:
+    body_contact_force_threshold: float = 0.15
+    required_goal_hold_time_s: float = 0.2
+    soft_goal_radius: float = 1.8
+    tight_goal_radius: float = 0.40
+    centroid_goal_completion_radius: float = 0.70
+    agent_goal_completion_radius: float = 1.20
+    cohesion_success_radius: float = 0.90
+    reward_action_rate_l1: float = 0.03
+    reward_height_action_rate_l1: float = 0.05
+    reward_cruise_height_l2: float = 0.03
+    reward_guidance_progress: float = 1.8
+    reward_guidance_wrong_way: float = 0.10
+    reward_guidance_lateral_error: float = 0.05
+    reward_centroid_goal_soft: float = 1.0
+    reward_centroid_goal_tight: float = 3.0
+    reward_cohesion_dispersion_l1: float = 0.15
+    reward_agent_collision: float = 8.0
+    reward_agent_separation: float = 0.15
+    reward_team_success: float = 15.0
+    reward_episode_failure: float = 10.0
+
+
+@configclass
 class DroneSwarmStaticSceneCfg(InteractiveSceneCfg):
     robot_0: ArticulationCfg = DJI_FPV_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot_0")
     robot_1: ArticulationCfg = DJI_FPV_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot_1")
@@ -160,18 +184,19 @@ class DroneSwarmStaticNavigationEnvCfg(DirectMARLEnvCfg):
     max_agent_distance_critic: float = 5.0
 
     agent_spawn_separation: float = 0.45
-    agent_collision_distance: float = 0.30
-    agent_separation_distance: float = 0.50
-    body_contact_force_threshold: float = 0.01
+    agent_collision_distance: float = 0.25
+    agent_separation_distance: float = 0.40
+    body_contact_force_threshold: float = 0.15
+    contact_failure_debounce_steps: int = 2
     fall_height_threshold: float = 0.5
-    required_goal_hold_time_s: float = 1.0
-    soft_goal_radius: float = 1.0
-    tight_goal_radius: float = 0.25
-    spawn_formation_radius: float = 0.40
-    cohesion_soft_radius: float = 0.60
-    cohesion_success_radius: float = 0.65
-    centroid_goal_completion_radius: float = 0.35
-    agent_goal_completion_radius: float = 0.85
+    required_goal_hold_time_s: float = 0.2
+    soft_goal_radius: float = 1.8
+    tight_goal_radius: float = 0.40
+    spawn_formation_radius: float = 0.35
+    cohesion_soft_radius: float = 0.55
+    cohesion_success_radius: float = 0.90
+    centroid_goal_completion_radius: float = 0.70
+    agent_goal_completion_radius: float = 1.20
     formation_sampling_attempts: int = 96
     formation_assignment_max_error: float = 0.3
     formation_z_score_weight: float = 2.0
@@ -183,20 +208,69 @@ class DroneSwarmStaticNavigationEnvCfg(DirectMARLEnvCfg):
 
     reward_action_rate_l1: float = 0.05
     reward_height_band_violation: float = 10.0
-    reward_height_action_rate_l1: float = 0.08
-    reward_cruise_height_l2: float = 0.08
-    reward_guidance_progress: float = 0.7
-    reward_guidance_wrong_way: float = 0.3
-    reward_guidance_lateral_error: float = 0.25
-    reward_centroid_goal_soft: float = 0.25
-    reward_centroid_goal_tight: float = 1.5
-    reward_cohesion_dispersion_l1: float = 0.6
-    reward_agent_collision: float = 20.0
-    reward_agent_separation: float = 0.5
-    reward_team_success: float = 5.0
-    reward_episode_failure: float = 50.0
+    reward_height_action_rate_l1: float = 0.05
+    reward_cruise_height_l2: float = 0.03
+    reward_guidance_progress: float = 1.8
+    reward_guidance_wrong_way: float = 0.10
+    reward_guidance_lateral_error: float = 0.05
+    reward_centroid_goal_soft: float = 1.0
+    reward_centroid_goal_tight: float = 3.0
+    reward_cohesion_dispersion_l1: float = 0.15
+    reward_agent_collision: float = 8.0
+    reward_agent_separation: float = 0.15
+    reward_team_success: float = 15.0
+    reward_episode_failure: float = 10.0
 
     cruise_height_release_distance: float = 1.0
+    curriculum_enabled: bool = True
+    curriculum_success_rate_ema_alpha: float = 0.05
+    curriculum_success_rate_thresholds: tuple[float, float] = (0.60, 0.75)
+    curriculum_min_completed_episodes: tuple[int, int] = (200, 600)
+    curriculum_stage_1: DroneSwarmCurriculumStageCfg = DroneSwarmCurriculumStageCfg()
+    curriculum_stage_2: DroneSwarmCurriculumStageCfg = DroneSwarmCurriculumStageCfg(
+        body_contact_force_threshold=0.08,
+        required_goal_hold_time_s=0.6,
+        soft_goal_radius=1.25,
+        tight_goal_radius=0.30,
+        centroid_goal_completion_radius=0.45,
+        agent_goal_completion_radius=0.95,
+        cohesion_success_radius=0.70,
+        reward_action_rate_l1=0.03,
+        reward_height_action_rate_l1=0.05,
+        reward_cruise_height_l2=0.03,
+        reward_guidance_progress=1.2,
+        reward_guidance_wrong_way=0.18,
+        reward_guidance_lateral_error=0.10,
+        reward_centroid_goal_soft=0.6,
+        reward_centroid_goal_tight=2.5,
+        reward_cohesion_dispersion_l1=0.25,
+        reward_agent_collision=12.0,
+        reward_agent_separation=0.25,
+        reward_team_success=10.0,
+        reward_episode_failure=15.0,
+    )
+    curriculum_stage_3: DroneSwarmCurriculumStageCfg = DroneSwarmCurriculumStageCfg(
+        body_contact_force_threshold=0.03,
+        required_goal_hold_time_s=1.0,
+        soft_goal_radius=1.0,
+        tight_goal_radius=0.25,
+        centroid_goal_completion_radius=0.30,
+        agent_goal_completion_radius=0.70,
+        cohesion_success_radius=0.45,
+        reward_action_rate_l1=0.04,
+        reward_height_action_rate_l1=0.05,
+        reward_cruise_height_l2=0.04,
+        reward_guidance_progress=1.0,
+        reward_guidance_wrong_way=0.20,
+        reward_guidance_lateral_error=0.12,
+        reward_centroid_goal_soft=0.5,
+        reward_centroid_goal_tight=2.0,
+        reward_cohesion_dispersion_l1=0.30,
+        reward_agent_collision=16.0,
+        reward_agent_separation=0.30,
+        reward_team_success=10.0,
+        reward_episode_failure=25.0,
+    )
 
     def __post_init__(self):
         self.sim.dt = 0.005
