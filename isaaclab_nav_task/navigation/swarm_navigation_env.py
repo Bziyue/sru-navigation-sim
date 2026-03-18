@@ -1,4 +1,4 @@
-"""Direct MARL environment for static region-to-region drone swarm navigation."""
+"""Direct MARL environment for static region-to-region drone swarm encirclement navigation."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class _IdentityDepthDelayManager:
 
 
 class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
-    """Shared-policy swarm navigation that preserves the original SRU visual architecture."""
+    """Shared-policy swarm encirclement task that preserves the original SRU visual architecture."""
 
     cfg: "DroneSwarmStaticNavigationEnvCfg"
 
@@ -72,11 +72,11 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
             (self.num_envs, self.swarm_size), float(self.cfg.nominal_height), dtype=torch.float32, device=self.device
         )
 
-        self._goal_pos_w = torch.zeros((self.num_envs, self.swarm_size, 3), dtype=torch.float32, device=self.device)
-        self._goal_steps = torch.zeros((self.num_envs, self.swarm_size), dtype=torch.long, device=self.device)
+        self._goal_center_w = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
+        self._encircle_steps = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
         self._required_steps_at_goal = max(1, int(round(self.cfg.required_goal_hold_time_s / self.step_dt)))
 
-        self._guidance_progress = torch.zeros((self.num_envs, self.swarm_size), dtype=torch.float32, device=self.device)
+        self._guidance_progress = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
         self._prev_guidance_progress = torch.zeros_like(self._guidance_progress)
         self._guidance_lateral_error = torch.zeros_like(self._guidance_progress)
         self._goal_distance = torch.zeros_like(self._guidance_progress)
@@ -99,8 +99,11 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
                 "guidance_progress",
                 "guidance_wrong_way",
                 "guidance_lateral_error",
-                "reach_goal_soft",
-                "reach_goal_tight",
+                "centroid_goal_soft",
+                "centroid_goal_tight",
+                "encircle_radius_l1",
+                "encircle_height_l1",
+                "encircle_contains_target",
                 "agent_collision",
                 "agent_separation",
                 "team_success",
@@ -169,14 +172,46 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
         agent_dir = relative_pos_b / relative_dist.unsqueeze(-1)
         return pos_w, quat_w, relative_pos_b, agent_dir
 
+    def _compute_swarm_centroid(self, pos_w: torch.Tensor) -> torch.Tensor:
+        return pos_w.mean(dim=1)
+
     def _compute_goal_command(self, pos_w: torch.Tensor, quat_w: torch.Tensor) -> torch.Tensor:
-        goal_in_body = quat_apply_inverse(quat_w.reshape(-1, 4), (self._goal_pos_w - pos_w).reshape(-1, 3)).view(
+        goal_center_w = self._goal_center_w.unsqueeze(1).expand(-1, self.swarm_size, -1)
+        goal_in_body = quat_apply_inverse(quat_w.reshape(-1, 4), (goal_center_w - pos_w).reshape(-1, 3)).view(
             self.num_envs, self.swarm_size, 3
         )
         distance = torch.linalg.norm(goal_in_body, dim=-1, keepdim=True).clamp_min(1e-6)
         direction = goal_in_body / distance
         log_distance = torch.log(distance + 1.0)
         return torch.cat([direction, log_distance], dim=-1)
+
+    def _point_in_triangle(self, triangle_xy: torch.Tensor, point_xy: torch.Tensor) -> torch.Tensor:
+        a = triangle_xy[:, 0]
+        b = triangle_xy[:, 1]
+        c = triangle_xy[:, 2]
+        v0 = c - a
+        v1 = b - a
+        v2 = point_xy - a
+        denom = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
+        valid = torch.abs(denom) > 1e-6
+        inv_denom = torch.where(valid, 1.0 / denom, torch.zeros_like(denom))
+        u = (v2[:, 0] * v1[:, 1] - v1[:, 0] * v2[:, 1]) * inv_denom
+        v = (v0[:, 0] * v2[:, 1] - v2[:, 0] * v0[:, 1]) * inv_denom
+        w = 1.0 - u - v
+        return valid & (u >= -1e-4) & (v >= -1e-4) & (w >= -1e-4)
+
+    def _compute_encirclement_metrics(
+        self, pos_w: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        goal_center_xy = self._goal_center_w[:, :2]
+        goal_center_z = self._goal_center_w[:, 2].unsqueeze(1)
+        centroid_w = self._compute_swarm_centroid(pos_w)
+        centroid_goal_distance_xy = torch.linalg.norm(centroid_w[:, :2] - goal_center_xy, dim=-1)
+        radial_distance_xy = torch.linalg.norm(pos_w[:, :, :2] - goal_center_xy.unsqueeze(1), dim=-1)
+        radius_error = torch.abs(radial_distance_xy - float(self.cfg.encircle_nominal_radius))
+        height_error = torch.abs(pos_w[:, :, 2] - goal_center_z)
+        contains_target = self._point_in_triangle(pos_w[:, :, :2], goal_center_xy)
+        return centroid_goal_distance_xy, radial_distance_xy, radius_error, height_error, contains_target, centroid_w
 
     def _encode_depth_features(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         policy_depth = {}
@@ -293,7 +328,7 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
 
     def _compute_goal_distances(self) -> torch.Tensor:
         pos_w = self._stack_robot_tensor("root_pos_w")
-        return torch.linalg.norm(self._goal_pos_w - pos_w, dim=-1)
+        return torch.linalg.norm(self._goal_center_w.unsqueeze(1) - pos_w, dim=-1)
 
     def _compute_min_pairwise_distance(self) -> torch.Tensor:
         pos_w = self._stack_robot_tensor("root_pos_w")
@@ -306,12 +341,8 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
         pos_w = self._stack_robot_tensor("root_pos_w")
-        flat_positions_xy = pos_w[:, :, :2].reshape(-1, 2)
-        flat_guidance_ids = self._shared_guidance_ids.unsqueeze(1).expand(-1, self.swarm_size).reshape(-1)
-        progress, lateral_error = self._project_guidance_state(flat_positions_xy, flat_guidance_ids)
-        progress = progress.view(self.num_envs, self.swarm_size)
-        lateral_error = lateral_error.view(self.num_envs, self.swarm_size)
-
+        centroid_w = self._compute_swarm_centroid(pos_w)
+        progress, lateral_error = self._project_guidance_state(centroid_w[:, :2], self._shared_guidance_ids)
         progress_delta = progress - self._guidance_progress
         positive_delta = torch.clamp(progress_delta, min=0.0, max=float(self.cfg.guidance_progress_clamp))
         backward_delta = torch.clamp(-progress_delta, min=0.0, max=float(self.cfg.guidance_wrong_way_clamp))
@@ -324,9 +355,27 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
             -0.5 * torch.square(lateral_error / max(float(self.cfg.guidance_lateral_sigma), 1e-6))
         )
 
-        goal_distance = torch.linalg.norm(self._goal_pos_w - pos_w, dim=-1)
-        reach_goal_soft = 1.0 / (1.0 + torch.square(goal_distance / float(self.cfg.soft_goal_radius)))
-        reach_goal_tight = 1.0 / (1.0 + torch.square(goal_distance / float(self.cfg.tight_goal_radius)))
+        (
+            centroid_goal_distance_xy,
+            radial_distance_xy,
+            radius_error,
+            height_error,
+            contains_target,
+            _,
+        ) = self._compute_encirclement_metrics(pos_w)
+        centroid_goal_soft = 1.0 / (
+            1.0 + torch.square(centroid_goal_distance_xy / float(self.cfg.soft_goal_radius))
+        )
+        centroid_goal_tight = 1.0 / (
+            1.0 + torch.square(centroid_goal_distance_xy / float(self.cfg.tight_goal_radius))
+        )
+        encircle_gate = torch.clamp(
+            1.0 - centroid_goal_distance_xy / max(float(self.cfg.encircle_height_activation_distance), 1e-6),
+            min=0.0,
+            max=1.0,
+        )
+        encircle_radius_l1 = radius_error.mean(dim=1) * encircle_gate
+        encircle_height_l1 = height_error.mean(dim=1) * encircle_gate
 
         action_rate_l1 = torch.sum(torch.abs(self._actions - self._prev_actions), dim=-1)
         height = pos_w[:, :, 2]
@@ -335,7 +384,7 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
         height_band_violation = torch.square(below + above)
         height_action_rate_l1 = torch.abs(self._actions[:, :, 3] - self._prev_actions[:, :, 3])
         cruise_height_l2 = torch.square(height - float(self.cfg.nominal_height)) * (
-            goal_distance > float(self.cfg.cruise_height_release_distance)
+            centroid_goal_distance_xy.unsqueeze(1) > float(self.cfg.cruise_height_release_distance)
         ).float()
         min_other_dist = self._compute_min_pairwise_distance()
         collision_penalty = (min_other_dist < float(self.cfg.agent_collision_distance)).float()
@@ -349,11 +398,22 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
             "height_band_violation": -float(self.cfg.reward_height_band_violation) * height_band_violation,
             "height_action_rate_l1": -float(self.cfg.reward_height_action_rate_l1) * height_action_rate_l1,
             "cruise_height_l2": -float(self.cfg.reward_cruise_height_l2) * cruise_height_l2,
-            "guidance_progress": float(self.cfg.reward_guidance_progress) * guidance_progress_reward,
-            "guidance_wrong_way": -float(self.cfg.reward_guidance_wrong_way) * guidance_wrong_way_penalty,
-            "guidance_lateral_error": -float(self.cfg.reward_guidance_lateral_error) * guidance_lateral_error_penalty,
-            "reach_goal_soft": float(self.cfg.reward_reach_goal_soft) * reach_goal_soft,
-            "reach_goal_tight": float(self.cfg.reward_reach_goal_tight) * reach_goal_tight,
+            "guidance_progress": float(self.cfg.reward_guidance_progress)
+            * guidance_progress_reward.unsqueeze(1).expand(-1, self.swarm_size),
+            "guidance_wrong_way": -float(self.cfg.reward_guidance_wrong_way)
+            * guidance_wrong_way_penalty.unsqueeze(1).expand(-1, self.swarm_size),
+            "guidance_lateral_error": -float(self.cfg.reward_guidance_lateral_error)
+            * guidance_lateral_error_penalty.unsqueeze(1).expand(-1, self.swarm_size),
+            "centroid_goal_soft": float(self.cfg.reward_centroid_goal_soft)
+            * centroid_goal_soft.unsqueeze(1).expand(-1, self.swarm_size),
+            "centroid_goal_tight": float(self.cfg.reward_centroid_goal_tight)
+            * centroid_goal_tight.unsqueeze(1).expand(-1, self.swarm_size),
+            "encircle_radius_l1": -float(self.cfg.reward_encircle_radius_l1)
+            * encircle_radius_l1.unsqueeze(1).expand(-1, self.swarm_size),
+            "encircle_height_l1": -float(self.cfg.reward_encircle_height_l1)
+            * encircle_height_l1.unsqueeze(1).expand(-1, self.swarm_size),
+            "encircle_contains_target": float(self.cfg.reward_encircle_contains_target)
+            * (contains_target.float() * encircle_gate).unsqueeze(1).expand(-1, self.swarm_size),
             "agent_collision": -float(self.cfg.reward_agent_collision) * collision_penalty,
             "agent_separation": -float(self.cfg.reward_agent_separation) * separation_penalty,
             "team_success": float(self.cfg.reward_team_success) * self._goal_success_buf.float().unsqueeze(1),
@@ -368,7 +428,7 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
         self._prev_guidance_progress.copy_(self._guidance_progress)
         self._guidance_progress.copy_(progress)
         self._guidance_lateral_error.copy_(lateral_error)
-        self._goal_distance.copy_(goal_distance)
+        self._goal_distance.copy_(centroid_goal_distance_xy)
         self._prev_actions.copy_(self._actions)
 
         return {agent: total_reward[:, self._agent_to_index[agent]] for agent in self.agent_ids}
@@ -392,15 +452,30 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
         upper_dist = pairwise_dist[:, self._upper_tri_rows, self._upper_tri_cols]
         return (upper_dist < float(self.cfg.agent_collision_distance)).any(dim=1)
 
-    def _update_goal_steps(self, goal_distance: torch.Tensor):
-        in_goal = goal_distance < float(self.cfg.goal_completion_radius)
-        self._goal_steps = torch.where(in_goal, self._goal_steps + 1, torch.zeros_like(self._goal_steps))
+    def _update_goal_steps(self, pos_w: torch.Tensor):
+        (
+            centroid_goal_distance_xy,
+            radial_distance_xy,
+            _radius_error,
+            height_error,
+            contains_target,
+            _centroid_w,
+        ) = self._compute_encirclement_metrics(pos_w)
+        radius_in_band = torch.abs(radial_distance_xy - float(self.cfg.encircle_nominal_radius)) <= float(
+            self.cfg.encircle_radius_tolerance
+        )
+        height_in_band = height_error <= float(self.cfg.encircle_height_tolerance)
+        min_pairwise_dist = self._compute_min_pairwise_distance().amin(dim=1)
+        centroid_in_band = centroid_goal_distance_xy <= float(self.cfg.encircle_centroid_tolerance)
+        pairwise_safe = min_pairwise_dist >= float(self.cfg.encircle_min_pairwise_distance)
+        formation_ok = contains_target & centroid_in_band & pairwise_safe & radius_in_band.all(dim=1) & height_in_band.all(dim=1)
+        self._encircle_steps = torch.where(formation_ok, self._encircle_steps + 1, torch.zeros_like(self._encircle_steps))
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-        goal_distance = self._compute_goal_distances()
-        self._update_goal_steps(goal_distance)
+        pos_w = self._stack_robot_tensor("root_pos_w")
+        self._update_goal_steps(pos_w)
 
-        self._goal_success_buf = torch.all(self._goal_steps >= self._required_steps_at_goal, dim=1)
+        self._goal_success_buf = self._encircle_steps >= self._required_steps_at_goal
         self._contact_failure_buf = self._contact_failures_by_agent().any(dim=1)
         self._collision_failure_buf = self._collision_failure()
         self._fall_failure_buf = self._fall_failure()
@@ -436,11 +511,63 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
 
         return torch.stack(selected, dim=0)
 
-    def _sample_swarm_points(self, region_ids: torch.Tensor, min_separation: float) -> torch.Tensor:
+    def _sample_formation_layout(
+        self, region_id: int, formation_radius: float, min_separation: float
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        region_points = self.region_safe_points[region_id]
+        if len(region_points) == 0:
+            raise RuntimeError(f"Region {region_id} does not contain any safe points.")
+
+        agent_angles = torch.arange(self.swarm_size, device=self.device, dtype=torch.float32) * (2.0 * math.pi / self.swarm_size)
+        for _ in range(int(self.cfg.formation_sampling_attempts)):
+            center = region_points[torch.randint(0, len(region_points), (1,), device=self.device).item()]
+            base_angle = torch.rand((), device=self.device) * (2.0 * math.pi)
+            desired_angles = agent_angles + base_angle
+            desired_xy = center[:2].unsqueeze(0) + formation_radius * torch.stack(
+                [torch.cos(desired_angles), torch.sin(desired_angles)], dim=-1
+            )
+            desired_z = torch.full((self.swarm_size, 1), center[2], dtype=torch.float32, device=self.device)
+            desired_points = torch.cat([desired_xy, desired_z], dim=-1)
+
+            available_mask = torch.ones(len(region_points), dtype=torch.bool, device=self.device)
+            selected_indices: list[torch.Tensor] = []
+            success = True
+            for desired_point in desired_points:
+                candidate_indices = torch.nonzero(available_mask, as_tuple=False).squeeze(-1)
+                candidates = region_points[candidate_indices]
+                xy_error = torch.linalg.norm(candidates[:, :2] - desired_point[:2], dim=1)
+                z_error = torch.abs(candidates[:, 2] - desired_point[2])
+                score = xy_error + float(self.cfg.formation_z_score_weight) * z_error
+                best_local = torch.argmin(score)
+                if xy_error[best_local] > float(self.cfg.formation_assignment_max_error):
+                    success = False
+                    break
+                best_global = candidate_indices[best_local]
+                selected_indices.append(best_global)
+                available_mask[best_global] = False
+
+            if success:
+                points = region_points[torch.stack(selected_indices)]
+                pairwise_xy = torch.cdist(points[:, :2].unsqueeze(0), points[:, :2].unsqueeze(0)).squeeze(0)
+                pairwise_xy.fill_diagonal_(float("inf"))
+                if pairwise_xy.min() >= min_separation:
+                    return center, points
+
+        fallback_points = self._sample_agent_points(region_id, min_separation=min_separation)
+        return fallback_points.mean(dim=0), fallback_points
+
+    def _sample_swarm_layouts(
+        self, region_ids: torch.Tensor, formation_radius: float, min_separation: float
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        centers = torch.zeros((len(region_ids), 3), dtype=torch.float32, device=self.device)
         points = torch.zeros((len(region_ids), self.swarm_size, 3), dtype=torch.float32, device=self.device)
         for local_index, region_id in enumerate(region_ids.tolist()):
-            points[local_index] = self._sample_agent_points(region_id, min_separation=min_separation)
-        return points
+            centers[local_index], points[local_index] = self._sample_formation_layout(
+                region_id,
+                formation_radius=formation_radius,
+                min_separation=min_separation,
+            )
+        return centers, points
 
     def _write_robot_state(self, env_ids: torch.Tensor, positions: torch.Tensor, yaws: torch.Tensor):
         flat_yaws = yaws.reshape(-1)
@@ -527,8 +654,16 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
         spawn_region_ids = region_pairs[:, 0]
         goal_region_ids = region_pairs[:, 1]
 
-        spawn_points = self._sample_swarm_points(spawn_region_ids, min_separation=float(self.cfg.agent_spawn_separation))
-        goal_points = self._sample_swarm_points(goal_region_ids, min_separation=float(self.cfg.agent_goal_separation))
+        spawn_centers, spawn_points = self._sample_swarm_layouts(
+            spawn_region_ids,
+            formation_radius=float(self.cfg.spawn_formation_radius),
+            min_separation=float(self.cfg.agent_spawn_separation),
+        )
+        goal_centers, _ = self._sample_swarm_layouts(
+            goal_region_ids,
+            formation_radius=float(self.cfg.encircle_nominal_radius),
+            min_separation=float(self.cfg.encircle_min_pairwise_distance),
+        )
         self.scene.env_origins[env_ids] = spawn_points.mean(dim=1)
 
         yaws = (torch.rand((len(env_ids), self.swarm_size), device=self.device) * 2.0 - 1.0) * math.pi
@@ -540,8 +675,8 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
         for agent in self.agent_ids:
             self.actions[agent][env_ids] = 0.0
 
-        self._goal_pos_w[env_ids] = goal_points
-        self._goal_steps[env_ids] = 0
+        self._goal_center_w[env_ids] = goal_centers
+        self._encircle_steps[env_ids] = 0
         self._shared_guidance_ids[env_ids] = pair_indices
         self._hard_failure_buf[env_ids] = False
         self._goal_success_buf[env_ids] = False
@@ -550,13 +685,11 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
         self._collision_failure_buf[env_ids] = False
         self._fall_failure_buf[env_ids] = False
 
-        flat_spawn_xy = spawn_points[:, :, :2].reshape(-1, 2)
-        flat_guidance_ids = pair_indices.unsqueeze(1).expand(-1, self.swarm_size).reshape(-1)
-        progress, lateral_error = self._project_guidance_state(flat_spawn_xy, flat_guidance_ids)
-        self._guidance_progress[env_ids] = progress.view(len(env_ids), self.swarm_size)
+        progress, lateral_error = self._project_guidance_state(spawn_points.mean(dim=1)[:, :2], pair_indices)
+        self._guidance_progress[env_ids] = progress
         self._prev_guidance_progress[env_ids] = self._guidance_progress[env_ids]
-        self._guidance_lateral_error[env_ids] = lateral_error.view(len(env_ids), self.swarm_size)
-        self._goal_distance[env_ids] = torch.linalg.norm(goal_points - spawn_points, dim=-1)
+        self._guidance_lateral_error[env_ids] = lateral_error
+        self._goal_distance[env_ids] = torch.linalg.norm(goal_centers[:, :2] - spawn_points.mean(dim=1)[:, :2], dim=-1)
 
         for agent in self.agent_ids:
             self.extras[agent] = {"log": shared_log}
