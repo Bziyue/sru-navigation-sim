@@ -1,4 +1,4 @@
-"""Direct MARL environment for static region-to-region drone swarm encirclement navigation."""
+"""Direct MARL environment for static region-to-region drone swarm cohesion navigation."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class _IdentityDepthDelayManager:
 
 
 class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
-    """Shared-policy swarm encirclement task that preserves the original SRU visual architecture."""
+    """Shared-policy swarm cohesion task that preserves the original SRU visual architecture."""
 
     cfg: "DroneSwarmStaticNavigationEnvCfg"
 
@@ -73,7 +73,7 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
         )
 
         self._goal_center_w = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
-        self._encircle_steps = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
+        self._goal_hold_steps = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
         self._required_steps_at_goal = max(1, int(round(self.cfg.required_goal_hold_time_s / self.step_dt)))
 
         self._guidance_progress = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
@@ -101,9 +101,7 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
                 "guidance_lateral_error",
                 "centroid_goal_soft",
                 "centroid_goal_tight",
-                "encircle_radius_l1",
-                "encircle_height_l1",
-                "encircle_contains_target",
+                "cohesion_dispersion_l1",
                 "agent_collision",
                 "agent_separation",
                 "team_success",
@@ -185,33 +183,15 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
         log_distance = torch.log(distance + 1.0)
         return torch.cat([direction, log_distance], dim=-1)
 
-    def _point_in_triangle(self, triangle_xy: torch.Tensor, point_xy: torch.Tensor) -> torch.Tensor:
-        a = triangle_xy[:, 0]
-        b = triangle_xy[:, 1]
-        c = triangle_xy[:, 2]
-        v0 = c - a
-        v1 = b - a
-        v2 = point_xy - a
-        denom = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
-        valid = torch.abs(denom) > 1e-6
-        inv_denom = torch.where(valid, 1.0 / denom, torch.zeros_like(denom))
-        u = (v2[:, 0] * v1[:, 1] - v1[:, 0] * v2[:, 1]) * inv_denom
-        v = (v0[:, 0] * v2[:, 1] - v2[:, 0] * v0[:, 1]) * inv_denom
-        w = 1.0 - u - v
-        return valid & (u >= -1e-4) & (v >= -1e-4) & (w >= -1e-4)
-
-    def _compute_encirclement_metrics(
+    def _compute_goal_group_metrics(
         self, pos_w: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         goal_center_xy = self._goal_center_w[:, :2]
-        goal_center_z = self._goal_center_w[:, 2].unsqueeze(1)
         centroid_w = self._compute_swarm_centroid(pos_w)
         centroid_goal_distance_xy = torch.linalg.norm(centroid_w[:, :2] - goal_center_xy, dim=-1)
-        radial_distance_xy = torch.linalg.norm(pos_w[:, :, :2] - goal_center_xy.unsqueeze(1), dim=-1)
-        radius_error = torch.abs(radial_distance_xy - float(self.cfg.encircle_nominal_radius))
-        height_error = torch.abs(pos_w[:, :, 2] - goal_center_z)
-        contains_target = self._point_in_triangle(pos_w[:, :, :2], goal_center_xy)
-        return centroid_goal_distance_xy, radial_distance_xy, radius_error, height_error, contains_target, centroid_w
+        agent_goal_distance_xy = torch.linalg.norm(pos_w[:, :, :2] - goal_center_xy.unsqueeze(1), dim=-1)
+        agent_to_centroid_distance_xy = torch.linalg.norm(pos_w[:, :, :2] - centroid_w[:, :2].unsqueeze(1), dim=-1)
+        return centroid_goal_distance_xy, agent_goal_distance_xy, agent_to_centroid_distance_xy, centroid_w
 
     def _encode_depth_features(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         policy_depth = {}
@@ -357,25 +337,20 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
 
         (
             centroid_goal_distance_xy,
-            radial_distance_xy,
-            radius_error,
-            height_error,
-            contains_target,
+            _agent_goal_distance_xy,
+            agent_to_centroid_distance_xy,
             _,
-        ) = self._compute_encirclement_metrics(pos_w)
+        ) = self._compute_goal_group_metrics(pos_w)
         centroid_goal_soft = 1.0 / (
             1.0 + torch.square(centroid_goal_distance_xy / float(self.cfg.soft_goal_radius))
         )
         centroid_goal_tight = 1.0 / (
             1.0 + torch.square(centroid_goal_distance_xy / float(self.cfg.tight_goal_radius))
         )
-        encircle_gate = torch.clamp(
-            1.0 - centroid_goal_distance_xy / max(float(self.cfg.encircle_height_activation_distance), 1e-6),
+        cohesion_dispersion_l1 = torch.clamp(
+            agent_to_centroid_distance_xy - float(self.cfg.cohesion_soft_radius),
             min=0.0,
-            max=1.0,
-        )
-        encircle_radius_l1 = radius_error.mean(dim=1) * encircle_gate
-        encircle_height_l1 = height_error.mean(dim=1) * encircle_gate
+        ).mean(dim=1)
 
         action_rate_l1 = torch.sum(torch.abs(self._actions - self._prev_actions), dim=-1)
         height = pos_w[:, :, 2]
@@ -408,12 +383,8 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
             * centroid_goal_soft.unsqueeze(1).expand(-1, self.swarm_size),
             "centroid_goal_tight": float(self.cfg.reward_centroid_goal_tight)
             * centroid_goal_tight.unsqueeze(1).expand(-1, self.swarm_size),
-            "encircle_radius_l1": -float(self.cfg.reward_encircle_radius_l1)
-            * encircle_radius_l1.unsqueeze(1).expand(-1, self.swarm_size),
-            "encircle_height_l1": -float(self.cfg.reward_encircle_height_l1)
-            * encircle_height_l1.unsqueeze(1).expand(-1, self.swarm_size),
-            "encircle_contains_target": float(self.cfg.reward_encircle_contains_target)
-            * (contains_target.float() * encircle_gate).unsqueeze(1).expand(-1, self.swarm_size),
+            "cohesion_dispersion_l1": -float(self.cfg.reward_cohesion_dispersion_l1)
+            * cohesion_dispersion_l1.unsqueeze(1).expand(-1, self.swarm_size),
             "agent_collision": -float(self.cfg.reward_agent_collision) * collision_penalty,
             "agent_separation": -float(self.cfg.reward_agent_separation) * separation_penalty,
             "team_success": float(self.cfg.reward_team_success) * self._goal_success_buf.float().unsqueeze(1),
@@ -453,29 +424,20 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
         return (upper_dist < float(self.cfg.agent_collision_distance)).any(dim=1)
 
     def _update_goal_steps(self, pos_w: torch.Tensor):
-        (
-            centroid_goal_distance_xy,
-            radial_distance_xy,
-            _radius_error,
-            height_error,
-            contains_target,
-            _centroid_w,
-        ) = self._compute_encirclement_metrics(pos_w)
-        radius_in_band = torch.abs(radial_distance_xy - float(self.cfg.encircle_nominal_radius)) <= float(
-            self.cfg.encircle_radius_tolerance
+        centroid_goal_distance_xy, agent_goal_distance_xy, agent_to_centroid_distance_xy, _ = self._compute_goal_group_metrics(
+            pos_w
         )
-        height_in_band = height_error <= float(self.cfg.encircle_height_tolerance)
-        min_pairwise_dist = self._compute_min_pairwise_distance().amin(dim=1)
-        centroid_in_band = centroid_goal_distance_xy <= float(self.cfg.encircle_centroid_tolerance)
-        pairwise_safe = min_pairwise_dist >= float(self.cfg.encircle_min_pairwise_distance)
-        formation_ok = contains_target & centroid_in_band & pairwise_safe & radius_in_band.all(dim=1) & height_in_band.all(dim=1)
-        self._encircle_steps = torch.where(formation_ok, self._encircle_steps + 1, torch.zeros_like(self._encircle_steps))
+        centroid_in_band = centroid_goal_distance_xy <= float(self.cfg.centroid_goal_completion_radius)
+        agents_near_goal = agent_goal_distance_xy.max(dim=1).values <= float(self.cfg.agent_goal_completion_radius)
+        cohesion_ok = agent_to_centroid_distance_xy.max(dim=1).values <= float(self.cfg.cohesion_success_radius)
+        goal_ready = centroid_in_band & agents_near_goal & cohesion_ok
+        self._goal_hold_steps = torch.where(goal_ready, self._goal_hold_steps + 1, torch.zeros_like(self._goal_hold_steps))
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         pos_w = self._stack_robot_tensor("root_pos_w")
         self._update_goal_steps(pos_w)
 
-        self._goal_success_buf = self._encircle_steps >= self._required_steps_at_goal
+        self._goal_success_buf = self._goal_hold_steps >= self._required_steps_at_goal
         self._contact_failure_buf = self._contact_failures_by_agent().any(dim=1)
         self._collision_failure_buf = self._collision_failure()
         self._fall_failure_buf = self._fall_failure()
@@ -569,6 +531,13 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
             )
         return centers, points
 
+    def _sample_region_centers(self, region_ids: torch.Tensor) -> torch.Tensor:
+        centers = torch.zeros((len(region_ids), 3), dtype=torch.float32, device=self.device)
+        for local_index, region_id in enumerate(region_ids.tolist()):
+            region_points = self.region_safe_points[region_id]
+            centers[local_index] = region_points[torch.randint(0, len(region_points), (1,), device=self.device).item()]
+        return centers
+
     def _write_robot_state(self, env_ids: torch.Tensor, positions: torch.Tensor, yaws: torch.Tensor):
         flat_yaws = yaws.reshape(-1)
         zeros = torch.zeros_like(flat_yaws)
@@ -659,12 +628,8 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
             formation_radius=float(self.cfg.spawn_formation_radius),
             min_separation=float(self.cfg.agent_spawn_separation),
         )
-        goal_centers, _ = self._sample_swarm_layouts(
-            goal_region_ids,
-            formation_radius=float(self.cfg.encircle_nominal_radius),
-            min_separation=float(self.cfg.encircle_min_pairwise_distance),
-        )
-        self.scene.env_origins[env_ids] = spawn_points.mean(dim=1)
+        goal_centers = self._sample_region_centers(goal_region_ids)
+        self.scene.env_origins[env_ids] = spawn_centers
 
         yaws = (torch.rand((len(env_ids), self.swarm_size), device=self.device) * 2.0 - 1.0) * math.pi
         self._write_robot_state(env_ids, spawn_points, yaws)
@@ -676,7 +641,7 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
             self.actions[agent][env_ids] = 0.0
 
         self._goal_center_w[env_ids] = goal_centers
-        self._encircle_steps[env_ids] = 0
+        self._goal_hold_steps[env_ids] = 0
         self._shared_guidance_ids[env_ids] = pair_indices
         self._hard_failure_buf[env_ids] = False
         self._goal_success_buf[env_ids] = False

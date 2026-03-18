@@ -1,4 +1,4 @@
-"""Configuration for static region-to-region drone swarm encirclement navigation with shared SRU policy."""
+"""Configuration for static region-to-region drone swarm cohesion navigation with shared SRU policy."""
 
 from __future__ import annotations
 
@@ -159,24 +159,22 @@ class DroneSwarmStaticNavigationEnvCfg(DirectMARLEnvCfg):
     max_agent_distance_policy: float = 3.0
     max_agent_distance_critic: float = 5.0
 
-    agent_spawn_separation: float = 0.6
-    agent_collision_distance: float = 0.35
-    agent_separation_distance: float = 1.0
+    agent_spawn_separation: float = 0.45
+    agent_collision_distance: float = 0.30
+    agent_separation_distance: float = 0.50
     body_contact_force_threshold: float = 0.01
     fall_height_threshold: float = 0.5
     required_goal_hold_time_s: float = 1.0
     soft_goal_radius: float = 1.0
     tight_goal_radius: float = 0.25
-    spawn_formation_radius: float = 0.65
-    encircle_nominal_radius: float = 0.65
-    encircle_radius_tolerance: float = 0.15
-    encircle_centroid_tolerance: float = 0.18
-    encircle_height_tolerance: float = 0.2
-    encircle_min_pairwise_distance: float = 0.55
+    spawn_formation_radius: float = 0.40
+    cohesion_soft_radius: float = 0.60
+    cohesion_success_radius: float = 0.65
+    centroid_goal_completion_radius: float = 0.35
+    agent_goal_completion_radius: float = 0.85
     formation_sampling_attempts: int = 96
     formation_assignment_max_error: float = 0.3
     formation_z_score_weight: float = 2.0
-    encircle_height_activation_distance: float = 2.0
 
     guidance_progress_clamp: float = 0.3
     guidance_wrong_way_clamp: float = 0.2
@@ -192,9 +190,7 @@ class DroneSwarmStaticNavigationEnvCfg(DirectMARLEnvCfg):
     reward_guidance_lateral_error: float = 0.25
     reward_centroid_goal_soft: float = 0.25
     reward_centroid_goal_tight: float = 1.5
-    reward_encircle_radius_l1: float = 0.6
-    reward_encircle_height_l1: float = 0.4
-    reward_encircle_contains_target: float = 1.0
+    reward_cohesion_dispersion_l1: float = 0.6
     reward_agent_collision: float = 20.0
     reward_agent_separation: float = 0.5
     reward_team_success: float = 5.0
