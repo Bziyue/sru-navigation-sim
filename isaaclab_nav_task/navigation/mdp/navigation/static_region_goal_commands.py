@@ -554,6 +554,7 @@ class StaticRegionGoalCommand(CommandTerm):
         self.metrics["velocity_toward_goal"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["velocity_magnitude"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["success_rate"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["goal_z"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["active_guidance_assignments"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["active_guidance_unique"] = torch.zeros(self.num_envs, device=self.device)
 
@@ -794,6 +795,7 @@ class StaticRegionGoalCommand(CommandTerm):
         direction_to_goal = position_error_2d / torch.clamp(torch.norm(position_error_2d, dim=1, keepdim=True), min=1e-6)
         self.metrics["velocity_toward_goal"] = (velocity_2d * direction_to_goal).sum(dim=1)
         self.metrics["success_rate"] = self.success_tracker.get_success_rate()
+        self.metrics["goal_z"] = self.goal_position_world[:, 2]
         active_assignments = float((self.current_guidance_ids >= 0).sum().item())
         active_unique = float(torch.unique(self.current_guidance_ids).numel())
         self.metrics["active_guidance_assignments"].fill_(active_assignments)
