@@ -1,0 +1,886 @@
+{
+  "input_npz": "/home/zdp/CodeField/my_swarm_rl/rl/sru-navigation-sim/isaaclab_nav_task/navigation/assets/data/Environments/StaticScan/DR_region_safe_points_contact_0p2m_1p2_to_2p0.npz",
+  "output_npz": "/home/zdp/CodeField/my_swarm_rl/rl/sru-navigation-sim/isaaclab_nav_task/navigation/assets/data/Environments/StaticScan/DR_region_safe_points_contact_0p2m_1p2_to_2p0_eroded_0p4m.npz",
+  "radius_m": 0.4,
+  "xy_spacing": 0.20000000298023224,
+  "z_spacing": 0.20000000298023224,
+  "z_values": [
+    1.2000000476837158,
+    1.399999976158142,
+    1.600000023841858,
+    1.7999999523162842,
+    2.0
+  ],
+  "total_regions": 48,
+  "total_candidate_points": 126835,
+  "total_safe_points_before": 125537,
+  "total_safe_points_after": 119023,
+  "removed_points": 6514,
+  "overall_safe_ratio_after": 0.9384081680924036,
+  "regions": [
+    {
+      "region_id": 0,
+      "name": "36_Flightsite_11",
+      "candidate_count": 4060,
+      "safe_count_before": 3982,
+      "safe_count_after": 3688,
+      "removed_count": 294,
+      "safe_ratio_after": 0.9083743842364532,
+      "xy_min": [
+        -2.2660000324249268,
+        -13.388699531555176
+      ],
+      "xy_max": [
+        3.2660000324249268,
+        -7.611299991607666
+      ],
+      "floor_z": 0.5
+    },
+    {
+      "region_id": 1,
+      "name": "34_Flightsite_9",
+      "candidate_count": 3360,
+      "safe_count_before": 3310,
+      "safe_count_after": 3189,
+      "removed_count": 121,
+      "safe_ratio_after": 0.9491071428571428,
+      "xy_min": [
+        -2.2660000324249268,
+        -2.388700008392334
+      ],
+      "xy_max": [
+        3.2660000324249268,
+        2.388700008392334
+      ],
+      "floor_z": 0.5
+    },
+    {
+      "region_id": 2,
+      "name": "33_Flightsite_8",
+      "candidate_count": 2470,
+      "safe_count_before": 2459,
+      "safe_count_after": 2385,
+      "removed_count": 74,
+      "safe_ratio_after": 0.9655870445344129,
+      "xy_min": [
+        -1.965999960899353,
+        2.611299991607666
+      ],
+      "xy_max": [
+        3.2660000324249268,
+        6.388700008392334
+      ],
+      "floor_z": 0.5
+    },
+    {
+      "region_id": 3,
+      "name": "31_Flightsite_6",
+      "candidate_count": 3410,
+      "safe_count_before": 3410,
+      "safe_count_after": 3410,
+      "removed_count": 0,
+      "safe_ratio_after": 1.0,
+      "xy_min": [
+        5.734000205993652,
+        0.611299991607666
+      ],
+      "xy_max": [
+        11.965999603271484,
+        5.088699817657471
+      ],
+      "floor_z": 0.30000001192092896
+    },
+    {
+      "region_id": 4,
+      "name": "35_Flightsite_10",
+      "candidate_count": 3360,
+      "safe_count_before": 3331,
+      "safe_count_after": 3119,
+      "removed_count": 212,
+      "safe_ratio_after": 0.9282738095238096,
+      "xy_min": [
+        -2.2660000324249268,
+        -7.388700008392334
+      ],
+      "xy_max": [
+        3.2660000324249268,
+        -2.611299991607666
+      ],
+      "floor_z": 0.5
+    },
+    {
+      "region_id": 5,
+      "name": "30_Flightsite_5",
+      "candidate_count": 3840,
+      "safe_count_before": 3840,
+      "safe_count_after": 3840,
+      "removed_count": 0,
+      "safe_ratio_after": 1.0,
+      "xy_min": [
+        5.734000205993652,
+        -4.388700008392334
+      ],
+      "xy_max": [
+        12.065999984741211,
+        0.388700008392334
+      ],
+      "floor_z": 0.5
+    },
+    {
+      "region_id": 6,
+      "name": "29_Flightsite_4",
+      "candidate_count": 3135,
+      "safe_count_before": 3135,
+      "safe_count_after": 3135,
+      "removed_count": 0,
+      "safe_ratio_after": 1.0,
+      "xy_min": [
+        5.734000205993652,
+        -8.388699531555176
+      ],
+      "xy_max": [
+        12.265999794006348,
+        -4.611299991607666
+      ],
+      "floor_z": 0.5
+    },
+    {
+      "region_id": 7,
+      "name": "28_Flightsite_3",
+      "candidate_count": 3960,
+      "safe_count_before": 3957,
+      "safe_count_after": 3915,
+      "removed_count": 42,
+      "safe_ratio_after": 0.9886363636363636,
+      "xy_min": [
+        5.734000205993652,
+        -13.388699531555176
+      ],
+      "xy_max": [
+        12.265999794006348,
+        -8.611300468444824
+      ],
+      "floor_z": 1.2000000476837158
+    },
+    {
+      "region_id": 8,
+      "name": "23_HardwareDepartment",
+      "candidate_count": 3360,
+      "safe_count_before": 3341,
+      "safe_count_after": 3168,
+      "removed_count": 173,
+      "safe_ratio_after": 0.9428571428571428,
+      "xy_min": [
+        5.734000205993652,
+        -26.388700485229492
+      ],
+      "xy_max": [
+        11.265999794006348,
+        -21.611299514770508
+      ],
+      "floor_z": 1.2999999523162842
+    },
+    {
+      "region_id": 9,
+      "name": "27_Flightsite_2",
+      "candidate_count": 3360,
+      "safe_count_before": 3360,
+      "safe_count_after": 3360,
+      "removed_count": 0,
+      "safe_ratio_after": 1.0,
+      "xy_min": [
+        5.734000205993652,
+        -18.388700485229492
+      ],
+      "xy_max": [
+        11.265999794006348,
+        -13.611300468444824
+      ],
+      "floor_z": 1.100000023841858
+    },
+    {
+      "region_id": 10,
+      "name": "25_TestRoom",
+      "candidate_count": 2940,
+      "safe_count_before": 2925,
+      "safe_count_after": 2789,
+      "removed_count": 136,
+      "safe_ratio_after": 0.9486394557823129,
+      "xy_min": [
+        -2.2660000324249268,
+        -19.388700485229492
+      ],
+      "xy_max": [
+        3.2660000324249268,
+        -15.111300468444824
+      ],
+      "floor_z": 1.399999976158142
+    },
+    {
+      "region_id": 11,
+      "name": "18_409MeetingRoom_2",
+      "candidate_count": 3060,
+      "safe_count_before": 3046,
+      "safe_count_after": 2948,
+      "removed_count": 98,
+      "safe_ratio_after": 0.9633986928104575,
+      "xy_min": [
+        8.734000205993652,
+        -34.38869857788086
+      ],
+      "xy_max": [
+        12.265999794006348,
+        -27.611299514770508
+      ],
+      "floor_z": 1.2000000476837158
+    },
+    {
+      "region_id": 12,
+      "name": "45_MarketingDepartment_2",
+      "candidate_count": 4440,
+      "safe_count_before": 4364,
+      "safe_count_after": 3967,
+      "removed_count": 397,
+      "safe_ratio_after": 0.8934684684684685,
+      "xy_min": [
+        -5.895999908447266,
+        26.711299896240234
+      ],
+      "xy_max": [
+        1.4359999895095825,
+        31.588699340820312
+      ],
+      "floor_z": 1.4199999570846558
+    },
+    {
+      "region_id": 13,
+      "name": "44_MarketingDepartment_1",
+      "candidate_count": 3150,
+      "safe_count_before": 3106,
+      "safe_count_after": 2985,
+      "removed_count": 121,
+      "safe_ratio_after": 0.9476190476190476,
+      "xy_min": [
+        -5.935999870300293,
+        22.711299896240234
+      ],
+      "xy_max": [
+        0.9959999918937683,
+        26.388700485229492
+      ],
+      "floor_z": 1.2400000095367432
+    },
+    {
+      "region_id": 14,
+      "name": "42_MeetRoom413_2",
+      "candidate_count": 1980,
+      "safe_count_before": 1960,
+      "safe_count_after": 1840,
+      "removed_count": 120,
+      "safe_ratio_after": 0.9292929292929293,
+      "xy_min": [
+        -6.216000080108643,
+        17.7012996673584
+      ],
+      "xy_max": [
+        -2.5840001106262207,
+        22.078699111938477
+      ],
+      "floor_z": 1.2200000286102295
+    },
+    {
+      "region_id": 15,
+      "name": "41_MeetRoom412",
+      "candidate_count": 1710,
+      "safe_count_before": 1428,
+      "safe_count_after": 659,
+      "removed_count": 769,
+      "safe_ratio_after": 0.3853801169590643,
+      "xy_min": [
+        -2.365999937057495,
+        12.511300086975098
+      ],
+      "xy_max": [
+        1.2660000324249268,
+        16.388700485229492
+      ],
+      "floor_z": 1.350000023841858
+    },
+    {
+      "region_id": 16,
+      "name": "48_InnovationLab_3",
+      "candidate_count": 7440,
+      "safe_count_before": 7333,
+      "safe_count_after": 6841,
+      "removed_count": 492,
+      "safe_ratio_after": 0.9194892473118279,
+      "xy_min": [
+        4.834000110626221,
+        25.611299514770508
+      ],
+      "xy_max": [
+        14.366000175476074,
+        31.788700103759766
+      ],
+      "floor_z": 1.399999976158142
+    },
+    {
+      "region_id": 17,
+      "name": "17_409MeetingRoom_1",
+      "candidate_count": 2720,
+      "safe_count_before": 2720,
+      "safe_count_after": 2720,
+      "removed_count": 0,
+      "safe_ratio_after": 1.0,
+      "xy_min": [
+        5.52400016784668,
+        -34.38869857788086
+      ],
+      "xy_max": [
+        8.656000137329102,
+        -27.611299514770508
+      ],
+      "floor_z": 1.4299999475479126
+    },
+    {
+      "region_id": 18,
+      "name": "19_MainCorridor_8",
+      "candidate_count": 1395,
+      "safe_count_before": 1395,
+      "safe_count_after": 1395,
+      "removed_count": 0,
+      "safe_ratio_after": 1.0,
+      "xy_min": [
+        2.3239998817443848,
+        -34.38869857788086
+      ],
+      "xy_max": [
+        4.156000137329102,
+        -28.111299514770508
+      ],
+      "floor_z": 0.23000000417232513
+    },
+    {
+      "region_id": 19,
+      "name": "11_MainCorridor_6",
+      "candidate_count": 1395,
+      "safe_count_before": 1395,
+      "safe_count_after": 1395,
+      "removed_count": 0,
+      "safe_ratio_after": 1.0,
+      "xy_min": [
+        2.253999948501587,
+        -41.79869842529297
+      ],
+      "xy_max": [
+        4.085999965667725,
+        -35.52130126953125
+      ],
+      "floor_z": 0.15000000596046448
+    },
+    {
+      "region_id": 20,
+      "name": "20_MainCorridor_9",
+      "candidate_count": 1395,
+      "safe_count_before": 1391,
+      "safe_count_after": 1367,
+      "removed_count": 24,
+      "safe_ratio_after": 0.9799283154121864,
+      "xy_min": [
+        2.3239998817443848,
+        -27.388700485229492
+      ],
+      "xy_max": [
+        4.156000137329102,
+        -21.111299514770508
+      ],
+      "floor_z": 0.09000000357627869
+    },
+    {
+      "region_id": 21,
+      "name": "26_Flightsite_1",
+      "candidate_count": 765,
+      "safe_count_before": 764,
+      "safe_count_after": 749,
+      "removed_count": 15,
+      "safe_ratio_after": 0.9790849673202614,
+      "xy_min": [
+        3.624000072479248,
+        -17.588699340820312
+      ],
+      "xy_max": [
+        5.455999851226807,
+        -14.111300468444824
+      ],
+      "floor_z": 0.5400000214576721
+    },
+    {
+      "region_id": 22,
+      "name": "12_MainCorridor_7",
+      "candidate_count": 1395,
+      "safe_count_before": 1395,
+      "safe_count_after": 1395,
+      "removed_count": 0,
+      "safe_ratio_after": 1.0,
+      "xy_min": [
+        3.9140000343322754,
+        -42.25870132446289
+      ],
+      "xy_max": [
+        5.745999813079834,
+        -35.981300354003906
+      ],
+      "floor_z": 0.15000000596046448
+    },
+    {
+      "region_id": 23,
+      "name": "9_MainCorridor_4",
+      "candidate_count": 1395,
+      "safe_count_before": 1395,
+      "safe_count_after": 1395,
+      "removed_count": 0,
+      "safe_ratio_after": 1.0,
+      "xy_min": [
+        2.253999948501587,
+        -48.79869842529297
+      ],
+      "xy_max": [
+        4.085999965667725,
+        -42.52130126953125
+      ],
+      "floor_z": 0.15000000596046448
+    },
+    {
+      "region_id": 24,
+      "name": "10_MainCorridor_5",
+      "candidate_count": 1845,
+      "safe_count_before": 1845,
+      "safe_count_after": 1845,
+      "removed_count": 0,
+      "safe_ratio_after": 1.0,
+      "xy_min": [
+        5.254000186920166,
+        -49.79869842529297
+      ],
+      "xy_max": [
+        7.085999965667725,
+        -41.621299743652344
+      ],
+      "floor_z": 0.15000000596046448
+    },
+    {
+      "region_id": 25,
+      "name": "7_MainCorridor_2",
+      "candidate_count": 1395,
+      "safe_count_before": 1390,
+      "safe_count_after": 1355,
+      "removed_count": 35,
+      "safe_ratio_after": 0.9713261648745519,
+      "xy_min": [
+        4.633999824523926,
+        -50.57870101928711
+      ],
+      "xy_max": [
+        6.466000080108643,
+        -44.301300048828125
+      ],
+      "floor_z": 0.15000000596046448
+    },
+    {
+      "region_id": 26,
+      "name": "6_MainCorridor_1",
+      "candidate_count": 1395,
+      "safe_count_before": 1395,
+      "safe_count_after": 1395,
+      "removed_count": 0,
+      "safe_ratio_after": 1.0,
+      "xy_min": [
+        2.5239999294281006,
+        -50.64870071411133
+      ],
+      "xy_max": [
+        4.355999946594238,
+        -44.371299743652344
+      ],
+      "floor_z": 0.15000000596046448
+    },
+    {
+      "region_id": 27,
+      "name": "14_CEOOffice_2",
+      "candidate_count": 1540,
+      "safe_count_before": 1499,
+      "safe_count_after": 1267,
+      "removed_count": 232,
+      "safe_ratio_after": 0.8227272727272728,
+      "xy_min": [
+        10.434000015258789,
+        -50.08869934082031
+      ],
+      "xy_max": [
+        13.265999794006348,
+        -45.61130142211914
+      ],
+      "floor_z": 1.4700000286102295
+    },
+    {
+      "region_id": 28,
+      "name": "13_CEOOffice_1",
+      "candidate_count": 1430,
+      "safe_count_before": 1421,
+      "safe_count_after": 1377,
+      "removed_count": 44,
+      "safe_ratio_after": 0.9629370629370629,
+      "xy_min": [
+        7.604000091552734,
+        -50.08869934082031
+      ],
+      "xy_max": [
+        10.236000061035156,
+        -45.61130142211914
+      ],
+      "floor_z": 1.4700000286102295
+    },
+    {
+      "region_id": 29,
+      "name": "2_AlgorithmDepartment_2",
+      "candidate_count": 4160,
+      "safe_count_before": 4112,
+      "safe_count_after": 3740,
+      "removed_count": 372,
+      "safe_ratio_after": 0.8990384615384616,
+      "xy_min": [
+        2.24399995803833,
+        -58.08869934082031
+      ],
+      "xy_max": [
+        7.375999927520752,
+        -51.61130142211914
+      ],
+      "floor_z": 1.2699999809265137
+    },
+    {
+      "region_id": 30,
+      "name": "1_AlgorithmDepartment_1",
+      "candidate_count": 4800,
+      "safe_count_before": 4721,
+      "safe_count_after": 4194,
+      "removed_count": 527,
+      "safe_ratio_after": 0.87375,
+      "xy_min": [
+        -3.9059998989105225,
+        -58.08869934082031
+      ],
+      "xy_max": [
+        2.125999927520752,
+        -51.61130142211914
+      ],
+      "floor_z": 1.2999999523162842
+    },
+    {
+      "region_id": 31,
+      "name": "3_AlgorithmDepartment_3",
+      "candidate_count": 4160,
+      "safe_count_before": 4067,
+      "safe_count_after": 3473,
+      "removed_count": 594,
+      "safe_ratio_after": 0.8348557692307692,
+      "xy_min": [
+        7.633999824523926,
+        -58.08869934082031
+      ],
+      "xy_max": [
+        12.765999794006348,
+        -51.61130142211914
+      ],
+      "floor_z": 1.440000057220459
+    },
+    {
+      "region_id": 32,
+      "name": "4_405MeetingRoom",
+      "candidate_count": 2175,
+      "safe_count_before": 2141,
+      "safe_count_after": 2027,
+      "removed_count": 114,
+      "safe_ratio_after": 0.9319540229885057,
+      "xy_min": [
+        -4.196000099182129,
+        -50.58869934082031
+      ],
+      "xy_max": [
+        1.6360000371932983,
+        -47.51129913330078
+      ],
+      "floor_z": 1.25
+    },
+    {
+      "region_id": 33,
+      "name": "5_406MeetRoom",
+      "candidate_count": 1350,
+      "safe_count_before": 1350,
+      "safe_count_after": 1350,
+      "removed_count": 0,
+      "safe_ratio_after": 1.0,
+      "xy_min": [
+        -2.246000051498413,
+        -46.83869934082031
+      ],
+      "xy_max": [
+        1.3860000371932983,
+        -43.86130142211914
+      ],
+      "floor_z": 0.9900000095367432
+    },
+    {
+      "region_id": 34,
+      "name": "15_HROffice_1",
+      "candidate_count": 2160,
+      "safe_count_before": 2145,
+      "safe_count_after": 1992,
+      "removed_count": 153,
+      "safe_ratio_after": 0.9222222222222223,
+      "xy_min": [
+        7.6539998054504395,
+        -44.36869812011719
+      ],
+      "xy_max": [
+        12.486000061035156,
+        -40.69129943847656
+      ],
+      "floor_z": 1.399999976158142
+    },
+    {
+      "region_id": 35,
+      "name": "16_HROffice_2",
+      "candidate_count": 2160,
+      "safe_count_before": 2131,
+      "safe_count_after": 1886,
+      "removed_count": 245,
+      "safe_ratio_after": 0.8731481481481481,
+      "xy_min": [
+        7.6539998054504395,
+        -40.65869903564453
+      ],
+      "xy_max": [
+        12.486000061035156,
+        -36.981300354003906
+      ],
+      "floor_z": 1.399999976158142
+    },
+    {
+      "region_id": 36,
+      "name": "8_MainCorridor_3",
+      "candidate_count": 2240,
+      "safe_count_before": 2240,
+      "safe_count_after": 2240,
+      "removed_count": 0,
+      "safe_ratio_after": 1.0,
+      "xy_min": [
+        2.9040000438690186,
+        -50.23870086669922
+      ],
+      "xy_max": [
+        6.035999774932861,
+        -44.56129837036133
+      ],
+      "floor_z": 0.17000000178813934
+    },
+    {
+      "region_id": 37,
+      "name": "24_MeetRoom410",
+      "candidate_count": 1680,
+      "safe_count_before": 1680,
+      "safe_count_after": 1680,
+      "removed_count": 0,
+      "safe_ratio_after": 1.0,
+      "xy_min": [
+        -2.4660000801086426,
+        -23.388700485229492
+      ],
+      "xy_max": [
+        1.6660000085830688,
+        -20.111299514770508
+      ],
+      "floor_z": 0.949999988079071
+    },
+    {
+      "region_id": 38,
+      "name": "21_MainCorridor_10",
+      "candidate_count": 495,
+      "safe_count_before": 485,
+      "safe_count_after": 425,
+      "removed_count": 60,
+      "safe_ratio_after": 0.8585858585858586,
+      "xy_min": [
+        2.1440000534057617,
+        -21.388700485229492
+      ],
+      "xy_max": [
+        3.9760000705718994,
+        -19.111299514770508
+      ],
+      "floor_z": 0.09000000357627869
+    },
+    {
+      "region_id": 39,
+      "name": "43_MeetRoom413_1",
+      "candidate_count": 1710,
+      "safe_count_before": 1710,
+      "safe_count_after": 1710,
+      "removed_count": 0,
+      "safe_ratio_after": 1.0,
+      "xy_min": [
+        -2.4560000896453857,
+        17.7012996673584
+      ],
+      "xy_max": [
+        1.0759999752044678,
+        21.578699111938477
+      ],
+      "floor_z": 0.8399999737739563
+    },
+    {
+      "region_id": 40,
+      "name": "47_InnovationLab_2",
+      "candidate_count": 7440,
+      "safe_count_before": 7437,
+      "safe_count_after": 7399,
+      "removed_count": 38,
+      "safe_ratio_after": 0.994489247311828,
+      "xy_min": [
+        4.834000110626221,
+        19.301300048828125
+      ],
+      "xy_max": [
+        14.366000175476074,
+        25.478700637817383
+      ],
+      "floor_z": 1.399999976158142
+    },
+    {
+      "region_id": 41,
+      "name": "46_InnovationLab_1",
+      "candidate_count": 7440,
+      "safe_count_before": 7404,
+      "safe_count_after": 7062,
+      "removed_count": 342,
+      "safe_ratio_after": 0.9491935483870968,
+      "xy_min": [
+        4.834000110626221,
+        13.041299819946289
+      ],
+      "xy_max": [
+        14.366000175476074,
+        19.218700408935547
+      ],
+      "floor_z": 1.399999976158142
+    },
+    {
+      "region_id": 42,
+      "name": "32_Flightsite_7",
+      "candidate_count": 2030,
+      "safe_count_before": 1955,
+      "safe_count_after": 1750,
+      "removed_count": 205,
+      "safe_ratio_after": 0.8620689655172413,
+      "xy_min": [
+        7.734000205993652,
+        5.211299896240234
+      ],
+      "xy_max": [
+        13.465999603271484,
+        8.088700294494629
+      ],
+      "floor_z": 1.3700000047683716
+    },
+    {
+      "region_id": 43,
+      "name": "37_UnknownRoom",
+      "candidate_count": 1920,
+      "safe_count_before": 1904,
+      "safe_count_after": 1781,
+      "removed_count": 123,
+      "safe_ratio_after": 0.9276041666666667,
+      "xy_min": [
+        5.843999862670898,
+        8.671299934387207
+      ],
+      "xy_max": [
+        12.276000022888184,
+        11.148699760437012
+      ],
+      "floor_z": 1.340000033378601
+    },
+    {
+      "region_id": 44,
+      "name": "38_SubCorridor_1",
+      "candidate_count": 930,
+      "safe_count_before": 891,
+      "safe_count_after": 682,
+      "removed_count": 209,
+      "safe_ratio_after": 0.7333333333333333,
+      "xy_min": [
+        2.5439999103546143,
+        6.711299896240234
+      ],
+      "xy_max": [
+        3.6760001182556152,
+        12.888699531555176
+      ],
+      "floor_z": 1.309999942779541
+    },
+    {
+      "region_id": 45,
+      "name": "40_SubCorridor_3",
+      "candidate_count": 1240,
+      "safe_count_before": 1234,
+      "safe_count_after": 1166,
+      "removed_count": 68,
+      "safe_ratio_after": 0.9403225806451613,
+      "xy_min": [
+        2.0940001010894775,
+        18.921300888061523
+      ],
+      "xy_max": [
+        3.7260000705718994,
+        25.198699951171875
+      ],
+      "floor_z": 1.440000057220459
+    },
+    {
+      "region_id": 46,
+      "name": "39_SubCorridor_2",
+      "candidate_count": 1240,
+      "safe_count_before": 1233,
+      "safe_count_after": 1168,
+      "removed_count": 65,
+      "safe_ratio_after": 0.9419354838709677,
+      "xy_min": [
+        2.0940001010894775,
+        12.921299934387207
+      ],
+      "xy_max": [
+        3.7260000705718994,
+        19.198699951171875
+      ],
+      "floor_z": 1.440000057220459
+    },
+    {
+      "region_id": 47,
+      "name": "22_Tearoom",
+      "candidate_count": 405,
+      "safe_count_before": 405,
+      "safe_count_after": 405,
+      "removed_count": 0,
+      "safe_ratio_after": 1.0,
+      "xy_min": [
+        0.03400000184774399,
+        -26.18869972229004
+      ],
+      "xy_max": [
+        1.7660000324249268,
+        -24.411300659179688
+      ],
+      "floor_z": 0.3700000047683716
+    }
+  ]
+}
