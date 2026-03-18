@@ -44,7 +44,8 @@ def euler_xyz_from_quat_wrapped(quat: torch.Tensor) -> tuple[torch.Tensor, torch
 def time_out_navigation(
     env: "ManagerBasedRLEnv",
     goal_cmd_name: str = "robot_goal",
-    distance_threshold: float = 0.5
+    distance_threshold: float = 0.5,
+    flat: bool = True,
 ) -> torch.Tensor:
     """Terminate the episode when the episode length exceeds the maximum episode length.
 
@@ -59,13 +60,22 @@ def time_out_navigation(
 
     env_ids = torch.where(termination)[0]
 
-    distance_goal = torch.norm(asset.data.root_pos_w[:, :2] - goal_cmd_generator.goal_position_world[:, :2], dim=1)
+    if flat:
+        distance_goal = torch.norm(asset.data.root_pos_w[:, :2] - goal_cmd_generator.goal_position_world[:, :2], dim=1)
+    else:
+        distance_goal = torch.norm(asset.data.root_pos_w[:, :3] - goal_cmd_generator.goal_position_world[:, :3], dim=1)
 
-    # update time at goal
-    goal_cmd_generator.time_at_goal[distance_goal < distance_threshold] += 1 * env.step_dt
+    # Require continuous residence inside the goal region. Leaving the goal resets the timer.
+    at_goal = distance_goal < distance_threshold
+    goal_cmd_generator.time_at_goal = torch.where(
+        at_goal,
+        goal_cmd_generator.time_at_goal + env.step_dt,
+        torch.zeros_like(goal_cmd_generator.time_at_goal),
+    )
 
     if env_ids.numel() > 0:  # Check if env_ids is not empty
-        success_masks = goal_cmd_generator.time_at_goal > 0.0
+        required_goal_time = goal_cmd_generator.required_time_at_goal_in_steps * env.step_dt
+        success_masks = goal_cmd_generator.time_at_goal >= required_goal_time
         value_buffer = torch.zeros_like(distance_goal)  # init with 0: Fail
         value_buffer[success_masks] = 1.0  # Success
         goal_cmd_generator.goal_reached_buffer.add(value_buffer, env_ids)
@@ -132,6 +142,7 @@ def at_goal_navigation(
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     distance_threshold: float = 0.5,
     goal_cmd_name: str = "robot_goal",
+    flat: bool = True,
 ) -> torch.Tensor:
     """Terminate the episode when the goal is reached.
 
@@ -151,17 +162,18 @@ def at_goal_navigation(
     goal_cmd_generator: RobotNavigationGoalCommand = env.command_manager._terms.get(goal_cmd_name)
 
     # Calculate distance to goal
-    xy_error = torch.norm(asset.data.root_pos_w[:, :2] - goal_cmd_generator.goal_position_world[:, :2], dim=1)
+    if flat:
+        goal_error = torch.norm(asset.data.root_pos_w[:, :2] - goal_cmd_generator.goal_position_world[:, :2], dim=1)
+    else:
+        goal_error = torch.norm(asset.data.root_pos_w[:, :3] - goal_cmd_generator.goal_position_world[:, :3], dim=1)
 
-    # Check conditions for termination
-    at_goal = xy_error < distance_threshold
-
-    # already at goal
-    already_at_goal = goal_cmd_generator.time_at_goal > 0.0
-    at_goal = torch.logical_or(at_goal, already_at_goal)
-
-    # Update the time at goal in steps
-    goal_cmd_generator.time_at_goal_in_steps[at_goal] += 1  # Increment if at goal
+    # Require continuous residence inside the goal region in step units as well.
+    at_goal = goal_error < distance_threshold
+    goal_cmd_generator.time_at_goal_in_steps[:] = torch.where(
+        at_goal,
+        goal_cmd_generator.time_at_goal_in_steps + 1,
+        torch.zeros_like(goal_cmd_generator.time_at_goal_in_steps),
+    )
 
     # Determine if termination condition is met
     termination = goal_cmd_generator.time_at_goal_in_steps > goal_cmd_generator.required_time_at_goal_in_steps

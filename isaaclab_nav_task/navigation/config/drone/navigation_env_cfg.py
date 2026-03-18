@@ -28,6 +28,10 @@ PLANNING_FREQ = 5.0
 STATIC_SCAN_DIR = os.path.join(ISAACLAB_NAV_TASKS_ASSETS_DIR, "Environments", "StaticScan")
 STATIC_VISUAL_MESH_PRIM_PATH = "/World/StaticMesh"
 STATIC_COLLISION_MESH_PRIM_PATH = "/World/MapMesh"
+DEFAULT_PRECOMPUTED_SAFE_POINTS_PATH = os.path.join(
+    STATIC_SCAN_DIR,
+    "DR_region_safe_points_contact_0p2m_1p2_to_2p0_eroded_0p4m.npz",
+)
 
 
 @configclass
@@ -101,7 +105,7 @@ class DroneCommandsCfg:
         spawn_polygon_csv_path=os.path.join(STATIC_SCAN_DIR, "polygon_coords.csv"),
         guidance_paths_data_path=os.path.join(STATIC_SCAN_DIR, "all_region_pair_paths.txt"),
         guidance_trajectories_data_path=os.path.join(STATIC_SCAN_DIR, "all_region_pair_trajectories.json"),
-        precomputed_safe_points_path=None,
+        precomputed_safe_points_path=DEFAULT_PRECOMPUTED_SAFE_POINTS_PATH,
         flight_height=1.2,
         point_clearance=0.15,
         safe_point_grid_spacing=0.25,
@@ -119,11 +123,13 @@ class DroneCommandsCfg:
 class DroneActionsCfg:
     velocity_command = mdp.DroneSE2ActionCfg(
         asset_name="robot",
-        scale=[2.5, 2.5, 1.5],
-        offset=[0.0, 0.0, 0.0],
+        scale=[2.5, 2.5, 1.5, 0.15],
+        offset=[0.0, 0.0, 0.0, 0.0],
         use_raw_actions=True,
         policy_distr_type="gaussian",
-        target_height=1.2,
+        nominal_height=1.2,
+        min_height=0.8,
+        max_height=2.5,
         body_name="body",
     )
 
@@ -135,6 +141,7 @@ class DroneObservationsCfg:
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel_delayed, noise=Unoise(n_min=-0.2, n_max=0.2))
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel_delayed, noise=Unoise(n_min=-0.1, n_max=0.1))
         projected_gravity = ObsTerm(func=mdp.projected_gravity_delayed, noise=Unoise(n_min=-0.1, n_max=0.1))
+        base_pos_z = ObsTerm(func=mdp.base_pos_z, noise=Unoise(n_min=-0.05, n_max=0.05))
         last_action = ObsTerm(func=mdp.last_action)
         target_position = ObsTerm(
             func=mdp.generated_commands_reshaped_delayed,
@@ -155,6 +162,7 @@ class DroneObservationsCfg:
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
         projected_gravity = ObsTerm(func=mdp.projected_gravity)
+        base_pos_z = ObsTerm(func=mdp.base_pos_z)
         last_action = ObsTerm(func=mdp.last_action)
         target_position = ObsTerm(
             func=mdp.generated_commands_reshaped,
@@ -176,7 +184,7 @@ class DroneObservationsCfg:
 
     @configclass
     class MetricsCfg(ObsGroup):
-        in_goal = ObsTerm(func=mdp.in_goal)
+        in_goal = ObsTerm(func=mdp.in_goal, params={"flat": False})
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -234,6 +242,21 @@ class DroneEventCfg:
 @configclass
 class DroneRewardsCfg:
     action_rate_l1 = RewTerm(func=mdp.action_rate_l1, weight=-0.05)
+    height_band_violation = RewTerm(
+        func=mdp.height_band_violation,
+        weight=-10.0,
+        params={"min_height": 0.8, "max_height": 2.5},
+    )
+    height_action_rate_l1 = RewTerm(
+        func=mdp.height_action_rate_l1,
+        weight=-0.08,
+        params={"action_term_name": "velocity_command"},
+    )
+    height_reference_l2 = RewTerm(
+        func=mdp.cruise_height_l2,
+        weight=-0.08,
+        params={"target_height": 1.2, "release_distance": 1.0, "command_name": "robot_goal", "flat": False},
+    )
     guidance_progress = RewTerm(
         func=mdp.guidance_progress_reward,
         weight=0.7,
@@ -250,26 +273,30 @@ class DroneRewardsCfg:
         params={"command_name": "robot_goal", "sigma": 0.6},
     )
     episode_termination = RewTerm(func=mdp.is_terminated, weight=-50.0)
-    reach_goal_xy_soft = RewTerm(
+    reach_goal_xyz_soft = RewTerm(
         func=mdp.reach_goal_xyz,
         weight=0.25,
-        params={"command_name": "robot_goal", "sigmoid": 2.5, "T_r": 1.0, "probability": 0.01, "flat": True, "ratio": False},
+        params={"command_name": "robot_goal", "sigmoid": 2.5, "T_r": 1.0, "probability": 0.01, "flat": False, "ratio": False},
     )
-    reach_goal_xy_tight = RewTerm(
+    reach_goal_xyz_tight = RewTerm(
         func=mdp.reach_goal_xyz,
         weight=1.5,
-        params={"command_name": "robot_goal", "sigmoid": 0.25, "T_r": 0.1, "probability": 0.01, "flat": True, "ratio": False},
+        params={"command_name": "robot_goal", "sigmoid": 0.25, "T_r": 0.1, "probability": 0.01, "flat": False, "ratio": False},
     )
 
 
 @configclass
 class DroneTerminationsCfg:
-    time_out = DoneTerm(func=mdp.time_out_navigation, time_out=True, params={"distance_threshold": 0.5})
+    time_out = DoneTerm(func=mdp.time_out_navigation, time_out=True, params={"distance_threshold": 0.5, "flat": False})
     body_contact = DoneTerm(
         func=mdp.illegal_contact_navigation,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["body"]), "threshold": 0.01},
     )
-    early_termination = DoneTerm(func=mdp.at_goal_navigation, time_out=True, params={"distance_threshold": 0.5})
+    early_termination = DoneTerm(
+        func=mdp.at_goal_navigation,
+        time_out=True,
+        params={"distance_threshold": 0.5, "flat": False},
+    )
     terrain_fall = DoneTerm(
         func=mdp.terrain_fall,
         time_out=True,

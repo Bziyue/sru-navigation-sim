@@ -656,6 +656,15 @@ class StaticRegionGoalCommand(CommandTerm):
                     f"{region_id}:{region_name}"
                     for region_id, region_name in zip(empty_region_ids, empty_region_names, strict=True)
                 )
+                )
+
+        same_region_ids = torch.where(self.guidance_pair_ids[:, 0] == self.guidance_pair_ids[:, 1])[0]
+        if len(same_region_ids) > 0:
+            example_id = int(same_region_ids[0].item())
+            region_id = int(self.guidance_pair_ids[example_id, 0].item())
+            raise RuntimeError(
+                "Guidance trajectory pairs must connect two different regions. "
+                f"Example invalid path id {example_id}: {region_id}:{self.region_names[region_id]}."
             )
 
         path_ids = torch.arange(len(self.guidance_pair_ids), device=self.device)
@@ -677,6 +686,22 @@ class StaticRegionGoalCommand(CommandTerm):
                 f"Example path id {example_id}: "
                 f"{source_id}:{self.region_names[source_id]} -> {target_id}:{self.region_names[target_id]}."
             )
+
+    def _sample_region_pairs(self, num_pairs: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Sample directed guidance pairs, ensuring spawn and goal belong to different regions."""
+        sampled_guidance_indices = torch.randint(0, len(self.guidance_pair_ids), (num_pairs,), device=self.device)
+        sampled_pairs = self.guidance_pair_ids[sampled_guidance_indices]
+        source_region_ids = sampled_pairs[:, 0]
+        target_region_ids = sampled_pairs[:, 1]
+        if torch.any(source_region_ids == target_region_ids):
+            same_region_ids = torch.where(source_region_ids == target_region_ids)[0]
+            example_local_idx = int(same_region_ids[0].item())
+            region_id = int(source_region_ids[example_local_idx].item())
+            raise RuntimeError(
+                "Sampled a guidance pair with identical source and target regions, which is not allowed. "
+                f"Example local index {example_local_idx}: {region_id}:{self.region_names[region_id]}."
+            )
+        return sampled_guidance_indices, source_region_ids, target_region_ids
 
     def _apply_spawn_state_to_robot(self, env_ids: torch.Tensor, spawn_points: torch.Tensor) -> None:
         """Write the freshly sampled spawn positions back to the robot root state.
@@ -784,10 +809,7 @@ class StaticRegionGoalCommand(CommandTerm):
         self.time_at_goal[env_ids_tensor] = 0
         self.total_distance_traveled[env_ids_tensor] = 0.0
 
-        sampled_guidance_indices = torch.randint(0, len(self.guidance_pair_ids), (len(env_ids_tensor),), device=self.device)
-        sampled_pairs = self.guidance_pair_ids[sampled_guidance_indices]
-        source_region_ids = sampled_pairs[:, 0]
-        target_region_ids = sampled_pairs[:, 1]
+        sampled_guidance_indices, source_region_ids, target_region_ids = self._sample_region_pairs(len(env_ids_tensor))
 
         spawn_points = self._sample_safe_points_from_regions(source_region_ids)
         goal_points = self._sample_safe_points_from_regions(target_region_ids)
@@ -841,16 +863,8 @@ class StaticRegionGoalCommand(CommandTerm):
         self.guidance_lateral_error.copy_(guidance_lateral_error)
 
     def reset(self, env_ids: Sequence[int] | None = None) -> dict[str, float]:
-        metrics_obs = self.env.observation_manager.compute_group(group_name="metrics")
         if env_ids is None:
             env_ids = slice(None)
-
-        success = metrics_obs["in_goal"][env_ids]
-        failed = ~success
-        self.success_rate_buffer[env_ids] = torch.roll(self.success_rate_buffer[env_ids], 1, dims=1)
-        rate = success.float() - failed.float()
-        rate[rate == 0] = -1
-        self.success_rate_buffer[env_ids, 0] = rate
 
         self.command_counter[env_ids] = 0
         self._resample(env_ids)

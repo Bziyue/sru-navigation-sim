@@ -471,6 +471,7 @@ def in_goal(
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     distance_threshold: float = 0.5,
     goal_cmd_name: str = "robot_goal",
+    flat: bool = True,
 ) -> torch.Tensor:
     """Check if the robot is within the goal distance threshold.
 
@@ -485,7 +486,10 @@ def in_goal(
     """
     asset: Articulation = env.scene[asset_cfg.name]
     goal_cmd_generator: RobotNavigationGoalCommand = env.command_manager._terms[goal_cmd_name]
-    distance_goal = torch.norm(asset.data.root_pos_w[:, :2] - goal_cmd_generator.pos_command_w[:, :2], dim=1, p=2)
+    if flat:
+        distance_goal = torch.norm(asset.data.root_pos_w[:, :2] - goal_cmd_generator.pos_command_w[:, :2], dim=1, p=2)
+    else:
+        distance_goal = torch.norm(asset.data.root_pos_w[:, :3] - goal_cmd_generator.pos_command_w[:, :3], dim=1, p=2)
     return distance_goal < distance_threshold
 
 

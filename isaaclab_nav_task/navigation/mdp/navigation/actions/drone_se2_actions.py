@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 
 class DroneSE2Action(ActionTerm):
-    """Map `[vx, vy, yaw_rate]` commands into planar drone root control."""
+    """Map `[vx, vy, yaw_rate, dz]` commands into near-planar drone root control."""
 
     cfg: DroneSE2ActionCfg
     _env: ManagerBasedEnv
@@ -25,12 +25,14 @@ class DroneSE2Action(ActionTerm):
     def __init__(self, cfg: DroneSE2ActionCfg, env: ManagerBasedEnv):
         super().__init__(cfg, env)
 
-        self._action_dim = 3
+        self._action_dim = 4
         self._raw_actions = torch.zeros((self.num_envs, self._action_dim), device=self.device)
+        self._prev_processed_actions = torch.zeros((self.num_envs, self._action_dim), device=self.device)
         self._processed_actions = torch.zeros_like(self._raw_actions)
         self._root_velocity_command = torch.zeros((self.num_envs, 6), device=self.device)
         self._scale = torch.tensor(self.cfg.scale, device=self.device)
         self._offset = torch.tensor(self.cfg.offset, device=self.device)
+        self._target_heights = torch.full((self.num_envs,), float(self.cfg.nominal_height), device=self.device)
 
     @property
     def action_dim(self) -> int:
@@ -46,6 +48,7 @@ class DroneSE2Action(ActionTerm):
 
     def process_actions(self, actions: torch.Tensor):
         self._raw_actions[:] = actions
+        self._prev_processed_actions[:] = self._processed_actions
         if self.cfg.use_raw_actions:
             self._processed_actions[:] = self._raw_actions
         else:
@@ -59,6 +62,12 @@ class DroneSE2Action(ActionTerm):
             raise ValueError(f"Unknown policy distribution type: {self.cfg.policy_distr_type}")
 
         self._processed_actions[:] = self._processed_actions * self._scale
+        current_heights = self._asset.data.root_pos_w[:, 2]
+        self._target_heights[:] = torch.clamp(
+            current_heights + self._processed_actions[:, 3],
+            min=float(self.cfg.min_height),
+            max=float(self.cfg.max_height),
+        )
 
     def apply_actions(self):
         root_pos = self._asset.data.root_pos_w.clone()
@@ -66,7 +75,7 @@ class DroneSE2Action(ActionTerm):
         yaw_only_quat = yaw_quat(root_quat)
 
         pose = torch.cat((root_pos, yaw_only_quat), dim=-1)
-        pose[:, 2] = self.cfg.target_height
+        pose[:, 2] = self._target_heights
         self._asset.write_root_pose_to_sim(pose)
 
         yaw = euler_xyz_from_quat(yaw_only_quat)[2]
@@ -84,6 +93,10 @@ class DroneSE2Action(ActionTerm):
         self._asset.write_root_velocity_to_sim(self._root_velocity_command)
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
         self._raw_actions[env_ids] = 0.0
+        self._prev_processed_actions[env_ids] = 0.0
         self._processed_actions[env_ids] = 0.0
         self._root_velocity_command[env_ids] = 0.0
+        self._target_heights[env_ids] = float(self.cfg.nominal_height)
