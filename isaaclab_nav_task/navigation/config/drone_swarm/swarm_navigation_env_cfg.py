@@ -19,11 +19,15 @@ PLANNING_FREQ = 5.0
 STATIC_SCAN_DIR = os.path.join(ISAACLAB_NAV_TASKS_ASSETS_DIR, "Environments", "StaticScan")
 STATIC_VISUAL_MESH_PRIM_PATH = "/World/StaticMesh"
 STATIC_COLLISION_MESH_PRIM_PATH = "/World/MapMesh"
+DEFAULT_PRECOMPUTED_SAFE_POINTS_PATH = os.path.join(
+    STATIC_SCAN_DIR,
+    "DR_region_safe_points_contact_0p2m_1p2_to_2p0_eroded_0p4m.npz",
+)
 
 AGENT_IDS = ["drone_0", "drone_1", "drone_2"]
 DEPTH_FEATURE_DIM = 64 * 5 * 8
 HEIGHT_FEATURE_DIM = 64 * 7 * 7
-POLICY_PROPRIO_DIM = 16 + (len(AGENT_IDS) - 1) * 5
+POLICY_PROPRIO_DIM = 18 + (len(AGENT_IDS) - 1) * 5
 CRITIC_PROPRIO_DIM = POLICY_PROPRIO_DIM
 POLICY_OBS_DIM = POLICY_PROPRIO_DIM + DEPTH_FEATURE_DIM
 CRITIC_OBS_DIM = CRITIC_PROPRIO_DIM + 1 + HEIGHT_FEATURE_DIM + DEPTH_FEATURE_DIM
@@ -124,7 +128,7 @@ class DroneSwarmStaticNavigationEnvCfg(DirectMARLEnvCfg):
         for agent in AGENT_IDS
     }
     state_space = 0
-    action_spaces = {agent: 3 for agent in AGENT_IDS}
+    action_spaces = {agent: 4 for agent in AGENT_IDS}
 
     sim: sim_utils.SimulationCfg = sim_utils.SimulationCfg(
         dt=0.005,
@@ -138,8 +142,12 @@ class DroneSwarmStaticNavigationEnvCfg(DirectMARLEnvCfg):
 
     surface_bbox_data_path: str = os.path.join(STATIC_SCAN_DIR, "DR_Surface_BBox_Data.txt")
     guidance_trajectories_data_path: str = os.path.join(STATIC_SCAN_DIR, "all_region_pair_trajectories.json")
+    precomputed_safe_points_path: str | None = DEFAULT_PRECOMPUTED_SAFE_POINTS_PATH
 
     flight_height: float = 1.2
+    nominal_height: float = 1.2
+    min_height: float = 0.8
+    max_height: float = 2.5
     point_clearance: float = 0.15
     safe_point_grid_spacing: float = 0.25
     guidance_trajectory_eval_dt: float = 0.05
@@ -147,6 +155,7 @@ class DroneSwarmStaticNavigationEnvCfg(DirectMARLEnvCfg):
 
     action_scale_xy: float = 2.5
     action_scale_yaw: float = 1.5
+    action_scale_z: float = 0.15
     max_agent_distance_policy: float = 3.0
     max_agent_distance_critic: float = 5.0
 
@@ -167,6 +176,9 @@ class DroneSwarmStaticNavigationEnvCfg(DirectMARLEnvCfg):
     guidance_lateral_sigma: float = 0.6
 
     reward_action_rate_l1: float = 0.05
+    reward_height_band_violation: float = 10.0
+    reward_height_action_rate_l1: float = 0.08
+    reward_cruise_height_l2: float = 0.08
     reward_guidance_progress: float = 0.7
     reward_guidance_wrong_way: float = 0.3
     reward_guidance_lateral_error: float = 0.25
@@ -176,6 +188,8 @@ class DroneSwarmStaticNavigationEnvCfg(DirectMARLEnvCfg):
     reward_agent_separation: float = 0.5
     reward_team_success: float = 5.0
     reward_episode_failure: float = 50.0
+
+    cruise_height_release_distance: float = 1.0
 
     def __post_init__(self):
         self.sim.dt = 0.005

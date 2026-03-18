@@ -65,9 +65,12 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
             self.swarm_size, self.swarm_size, offset=1, device=self.device
         )
 
-        self._actions = torch.zeros((self.num_envs, self.swarm_size, 3), dtype=torch.float32, device=self.device)
+        self._actions = torch.zeros((self.num_envs, self.swarm_size, 4), dtype=torch.float32, device=self.device)
         self._prev_actions = torch.zeros_like(self._actions)
         self._root_velocity_command = torch.zeros((self.num_envs, 6), dtype=torch.float32, device=self.device)
+        self._target_heights = torch.full(
+            (self.num_envs, self.swarm_size), float(self.cfg.nominal_height), dtype=torch.float32, device=self.device
+        )
 
         self._goal_pos_w = torch.zeros((self.num_envs, self.swarm_size, 3), dtype=torch.float32, device=self.device)
         self._goal_steps = torch.zeros((self.num_envs, self.swarm_size), dtype=torch.long, device=self.device)
@@ -90,6 +93,9 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
             key: torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
             for key in [
                 "action_rate_l1",
+                "height_band_violation",
+                "height_action_rate_l1",
+                "cruise_height_l2",
                 "guidance_progress",
                 "guidance_wrong_way",
                 "guidance_lateral_error",
@@ -108,6 +114,7 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
             flight_height=float(self.cfg.flight_height),
             point_clearance=float(self.cfg.point_clearance),
             grid_spacing=float(self.cfg.safe_point_grid_spacing),
+            precomputed_safe_points_path=self.cfg.precomputed_safe_points_path,
         )
         self.region_safe_points = [
             torch.as_tensor(region["safe_points"], dtype=torch.float32, device=self.device) for region in region_point_sets
@@ -190,6 +197,7 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
         lin_vel_b = self._stack_robot_tensor("root_lin_vel_b")
         ang_vel_b = self._stack_robot_tensor("root_ang_vel_b")
         projected_gravity_b = self._stack_robot_tensor("projected_gravity_b")
+        base_pos_z = pos_w[:, :, 2:3]
         goal_command = self._compute_goal_command(pos_w, quat_w)
         policy_depth, critic_depth = self._encode_depth_features()
         critic_height = self._encode_height_features()
@@ -222,6 +230,7 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
                     lin_vel_b[:, index],
                     ang_vel_b[:, index],
                     projected_gravity_b[:, index],
+                    base_pos_z[:, index],
                     self._actions[:, index],
                     goal_command[:, index],
                     policy_others[:, index].flatten(start_dim=1),
@@ -233,6 +242,7 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
                     lin_vel_b[:, index],
                     ang_vel_b[:, index],
                     projected_gravity_b[:, index],
+                    base_pos_z[:, index],
                     self._actions[:, index],
                     goal_command[:, index],
                     critic_others[:, index].flatten(start_dim=1),
@@ -287,7 +297,7 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
 
     def _compute_min_pairwise_distance(self) -> torch.Tensor:
         pos_w = self._stack_robot_tensor("root_pos_w")
-        pairwise_dist = torch.cdist(pos_w[:, :, :2], pos_w[:, :, :2])
+        pairwise_dist = torch.cdist(pos_w, pos_w)
         pairwise_dist = pairwise_dist.masked_fill(
             torch.eye(self.swarm_size, device=self.device, dtype=torch.bool).unsqueeze(0),
             float("inf"),
@@ -319,6 +329,14 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
         reach_goal_tight = 1.0 / (1.0 + torch.square(goal_distance / float(self.cfg.tight_goal_radius)))
 
         action_rate_l1 = torch.sum(torch.abs(self._actions - self._prev_actions), dim=-1)
+        height = pos_w[:, :, 2]
+        below = torch.clamp(float(self.cfg.min_height) - height, min=0.0)
+        above = torch.clamp(height - float(self.cfg.max_height), min=0.0)
+        height_band_violation = torch.square(below + above)
+        height_action_rate_l1 = torch.abs(self._actions[:, :, 3] - self._prev_actions[:, :, 3])
+        cruise_height_l2 = torch.square(height - float(self.cfg.nominal_height)) * (
+            goal_distance > float(self.cfg.cruise_height_release_distance)
+        ).float()
         min_other_dist = self._compute_min_pairwise_distance()
         collision_penalty = (min_other_dist < float(self.cfg.agent_collision_distance)).float()
         separation_penalty = torch.clamp(
@@ -328,6 +346,9 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
 
         rewards = {
             "action_rate_l1": -float(self.cfg.reward_action_rate_l1) * action_rate_l1,
+            "height_band_violation": -float(self.cfg.reward_height_band_violation) * height_band_violation,
+            "height_action_rate_l1": -float(self.cfg.reward_height_action_rate_l1) * height_action_rate_l1,
+            "cruise_height_l2": -float(self.cfg.reward_cruise_height_l2) * cruise_height_l2,
             "guidance_progress": float(self.cfg.reward_guidance_progress) * guidance_progress_reward,
             "guidance_wrong_way": -float(self.cfg.reward_guidance_wrong_way) * guidance_wrong_way_penalty,
             "guidance_lateral_error": -float(self.cfg.reward_guidance_lateral_error) * guidance_lateral_error_penalty,
@@ -367,7 +388,7 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
 
     def _collision_failure(self) -> torch.Tensor:
         pos_w = self._stack_robot_tensor("root_pos_w")
-        pairwise_dist = torch.cdist(pos_w[:, :, :2], pos_w[:, :, :2])
+        pairwise_dist = torch.cdist(pos_w, pos_w)
         upper_dist = pairwise_dist[:, self._upper_tri_rows, self._upper_tri_cols]
         return (upper_dist < float(self.cfg.agent_collision_distance)).any(dim=1)
 
@@ -444,6 +465,12 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
             clamped = actions[agent].clamp(-1.0, 1.0)
             self.actions[agent] = clamped
             self._actions[:, index].copy_(clamped)
+            current_heights = self._robots[agent].data.root_pos_w[:, 2]
+            self._target_heights[:, index] = torch.clamp(
+                current_heights + clamped[:, 3] * float(self.cfg.action_scale_z),
+                min=float(self.cfg.min_height),
+                max=float(self.cfg.max_height),
+            )
 
     def _apply_action(self):
         for agent in self.agent_ids:
@@ -452,7 +479,7 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
             root_pos = robot.data.root_pos_w.clone()
             root_quat = yaw_quat(robot.data.root_quat_w)
             pose = torch.cat((root_pos, root_quat), dim=-1)
-            pose[:, 2] = float(self.cfg.flight_height)
+            pose[:, 2] = self._target_heights[:, index]
             robot.write_root_pose_to_sim(pose)
 
             yaw = math_utils.euler_xyz_from_quat(root_quat)[2]
@@ -502,8 +529,6 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
 
         spawn_points = self._sample_swarm_points(spawn_region_ids, min_separation=float(self.cfg.agent_spawn_separation))
         goal_points = self._sample_swarm_points(goal_region_ids, min_separation=float(self.cfg.agent_goal_separation))
-        spawn_points[..., 2] = float(self.cfg.flight_height)
-        goal_points[..., 2] = float(self.cfg.flight_height)
         self.scene.env_origins[env_ids] = spawn_points.mean(dim=1)
 
         yaws = (torch.rand((len(env_ids), self.swarm_size), device=self.device) * 2.0 - 1.0) * math.pi
@@ -511,6 +536,7 @@ class DroneSwarmStaticNavigationEnv(DirectMARLEnv):
 
         self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
+        self._target_heights[env_ids] = spawn_points[:, :, 2]
         for agent in self.agent_ids:
             self.actions[agent][env_ids] = 0.0
 
