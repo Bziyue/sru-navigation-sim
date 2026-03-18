@@ -28,6 +28,67 @@ def action_rate_l1(env: "ManagerBasedRLEnv") -> torch.Tensor:
     return torch.sum(torch.abs(env.action_manager.action - env.action_manager.prev_action), dim=1)
 
 
+def height_band_violation(
+    env: "ManagerBasedRLEnv",
+    min_height: float,
+    max_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize flying below or above the allowed height band."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    height = asset.data.root_pos_w[:, 2]
+    below = torch.clamp(min_height - height, min=0.0)
+    above = torch.clamp(height - max_height, min=0.0)
+    violation = below + above
+    return torch.square(violation)
+
+
+def height_hold_action_l1(
+    env: "ManagerBasedRLEnv",
+    action_term_name: str = "velocity_command",
+    action_index: int = 3,
+) -> torch.Tensor:
+    """Penalize non-zero height increments so the policy prefers holding altitude."""
+    action_term = env.action_manager.get_term(action_term_name)
+    return torch.abs(action_term.processed_actions[:, action_index])
+
+
+def height_action_rate_l1(
+    env: "ManagerBasedRLEnv",
+    action_term_name: str = "velocity_command",
+    action_index: int = 3,
+) -> torch.Tensor:
+    """Penalize abrupt changes in the height command."""
+    action_term = env.action_manager.get_term(action_term_name)
+    return torch.abs(action_term.processed_actions[:, action_index] - action_term._prev_processed_actions[:, action_index])
+
+
+def cruise_height_l2(
+    env: "ManagerBasedRLEnv",
+    target_height: float,
+    release_distance: float,
+    command_name: str = "robot_goal",
+    flat: bool = False,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize deviation from a cruise height except when the robot is close to the goal.
+
+    This keeps the drone near the nominal cruise height during transit, while allowing it
+    to match a goal with a different z-value once it gets sufficiently close to the goal.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    goal_cmd_generator: RobotNavigationGoalCommand = env.command_manager._terms[command_name]
+
+    if flat:
+        goal_distance = torch.norm(asset.data.root_pos_w[:, :2] - goal_cmd_generator.goal_position_world[:, :2], dim=1)
+    else:
+        goal_distance = torch.norm(asset.data.root_pos_w[:, :3] - goal_cmd_generator.goal_position_world[:, :3], dim=1)
+
+    height_error = torch.square(asset.data.root_pos_w[:, 2] - target_height)
+    cruise_mask = goal_distance > release_distance
+    return height_error * cruise_mask.float()
+
+
 def lateral_movement(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Reward the agent for moving laterally using L1-Kernel.
 
