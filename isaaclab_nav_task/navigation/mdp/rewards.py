@@ -207,11 +207,19 @@ def backward_movement_penalty(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg 
     return backward_velocity
 
 
+def _guidance_active_mask(goal_cmd_generator, fade_steps: float) -> torch.Tensor:
+    """Linearly fade guidance shaping after entering the target region."""
+    region_steps = goal_cmd_generator.steps_inside_goal_region
+    fade = 1.0 - region_steps / max(float(fade_steps), 1.0)
+    return torch.clamp(fade, min=0.0, max=1.0)
+
+
 def guidance_progress_reward(
     env: ManagerBasedRLEnv,
     command_name: str,
     clamp_delta: float = 0.3,
     lateral_sigma: float = 0.6,
+    goal_region_fade_steps: float = 15.0,
 ) -> torch.Tensor:
     """Reward positive progress along the guidance centerline.
 
@@ -226,13 +234,16 @@ def guidance_progress_reward(
     progress_delta = current_progress - goal_cmd_generator.guidance_progress
     positive_delta = torch.clamp(progress_delta, min=0.0, max=clamp_delta)
     corridor_alignment = torch.exp(-torch.square(lateral_error / max(lateral_sigma, 1e-6)))
-    return (positive_delta / max(clamp_delta, 1e-6)) * corridor_alignment
+    return (positive_delta / max(clamp_delta, 1e-6)) * corridor_alignment * _guidance_active_mask(
+        goal_cmd_generator, goal_region_fade_steps
+    )
 
 
 def guidance_wrong_way_penalty(
     env: ManagerBasedRLEnv,
     command_name: str,
     clamp_delta: float = 0.2,
+    goal_region_fade_steps: float = 15.0,
 ) -> torch.Tensor:
     """Penalize moving backward along the guidance centerline."""
     goal_cmd_generator = env.command_manager._terms[command_name]
@@ -242,13 +253,14 @@ def guidance_wrong_way_penalty(
     )
     progress_delta = current_progress - goal_cmd_generator.guidance_progress
     backward_delta = torch.clamp(-progress_delta, min=0.0, max=clamp_delta)
-    return backward_delta / max(clamp_delta, 1e-6)
+    return (backward_delta / max(clamp_delta, 1e-6)) * _guidance_active_mask(goal_cmd_generator, goal_region_fade_steps)
 
 
 def guidance_lateral_error_penalty(
     env: ManagerBasedRLEnv,
     command_name: str,
     sigma: float = 0.6,
+    goal_region_fade_steps: float = 15.0,
 ) -> torch.Tensor:
     """Penalize lateral deviation from the guidance centerline with smooth saturation."""
     goal_cmd_generator = env.command_manager._terms[command_name]
@@ -257,4 +269,5 @@ def guidance_lateral_error_penalty(
         guidance_ids=goal_cmd_generator.current_guidance_ids,
     )
     normalized_error = lateral_error / max(sigma, 1e-6)
-    return 1.0 - torch.exp(-0.5 * torch.square(normalized_error))
+    penalty = 1.0 - torch.exp(-0.5 * torch.square(normalized_error))
+    return penalty * _guidance_active_mask(goal_cmd_generator, goal_region_fade_steps)

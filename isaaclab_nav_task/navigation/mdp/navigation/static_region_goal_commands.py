@@ -540,6 +540,7 @@ class StaticRegionGoalCommand(CommandTerm):
         self.guidance_vis_point_cap = 160
 
         self.steps_at_goal = torch.zeros(self.num_envs, device=self.device)
+        self.steps_inside_goal_region = torch.zeros(self.num_envs, device=self.device)
         self.time_at_goal = torch.zeros(self.num_envs, device=self.device)
         self.goal_hold_time_initial_s = float(cfg.goal_hold_time_initial_s)
         self.goal_hold_time_final_s = float(cfg.goal_hold_time_final_s)
@@ -564,6 +565,7 @@ class StaticRegionGoalCommand(CommandTerm):
         self.metrics["goal_z_error_abs"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["in_goal_xy"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["in_goal_xyz"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["steps_inside_goal_region"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["steps_at_goal"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["goal_hold_progress"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["required_goal_hold_time_s"] = torch.zeros(self.num_envs, device=self.device)
@@ -814,8 +816,14 @@ class StaticRegionGoalCommand(CommandTerm):
         distance_xy = torch.norm(position_error_2d, dim=1)
         distance_xyz = torch.norm(position_error, dim=1)
         goal_z_error_abs = torch.abs(position_error[:, 2])
+        in_goal_region = self._points_inside_regions(self.robot.data.root_pos_w[:, :2], self.goal_region_ids)
         in_goal_xy = distance_xy < 0.5
         in_goal_xyz = distance_xyz < 0.5
+        self.steps_inside_goal_region = torch.where(
+            in_goal_region,
+            self.steps_inside_goal_region + 1,
+            torch.zeros_like(self.steps_inside_goal_region),
+        )
 
         self.metrics["velocity_magnitude"] = torch.norm(velocity_2d, dim=1)
         direction_to_goal = position_error_2d / torch.clamp(torch.norm(position_error_2d, dim=1, keepdim=True), min=1e-6)
@@ -828,6 +836,7 @@ class StaticRegionGoalCommand(CommandTerm):
         self.metrics["goal_z_error_abs"] = goal_z_error_abs
         self.metrics["in_goal_xy"] = in_goal_xy.float()
         self.metrics["in_goal_xyz"] = in_goal_xyz.float()
+        self.metrics["steps_inside_goal_region"] = self.steps_inside_goal_region
         self.metrics["steps_at_goal"] = self.steps_at_goal
         self.metrics["goal_hold_progress"] = torch.clamp(
             self.steps_at_goal / max(float(self.required_steps_at_goal), 1.0),
@@ -847,6 +856,7 @@ class StaticRegionGoalCommand(CommandTerm):
             env_ids_tensor = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
 
         self.steps_at_goal[env_ids_tensor] = 0
+        self.steps_inside_goal_region[env_ids_tensor] = 0
         self.time_at_goal[env_ids_tensor] = 0
         self.total_distance_traveled[env_ids_tensor] = 0.0
 
