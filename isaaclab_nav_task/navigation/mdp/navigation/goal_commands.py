@@ -258,7 +258,7 @@ class PositionSampler:
 
         # Random indices within valid range
         valid_counts = count_per_terrain[terrain_indices_table].float().clamp(min=1)
-        random_indices = (torch.rand(num_samples) * valid_counts).long()
+        random_indices = (torch.rand(num_samples, device=self.table_device) * valid_counts).long()
 
         # Lookup positions
         selected = positions_table[terrain_indices_table, random_indices.to(self.table_device)].to(self.device)  # (n, 3)

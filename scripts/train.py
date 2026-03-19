@@ -50,9 +50,8 @@ parser.add_argument("--run_name", type=str, default=None, help="Custom run name 
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 
-# always enable cameras to record video
-if args_cli.video:
-    args_cli.enable_cameras = True
+# navigation tasks in this repo rely on camera-based observations
+args_cli.enable_cameras = True
 
 # Launch simulation
 app_launcher = AppLauncher(args_cli)
@@ -125,6 +124,8 @@ def main():
         agent_cfg.max_iterations = args_cli.max_iterations
     if args_cli.run_name is not None:
         agent_cfg.run_name = args_cli.run_name
+    if getattr(args_cli, "device", None) is not None:
+        agent_cfg.device = args_cli.device
 
     # Create the environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)

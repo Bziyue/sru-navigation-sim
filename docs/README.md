@@ -365,83 +365,29 @@ Robot configuration modules define robot-specific parameters:
 
 Both configurations integrate seamlessly with the hierarchical navigation controller and pre-trained locomotion policies.
 
-## Docker and Cluster Setup
+## Cluster Deployment
 
-### Docker Modifications
+This repository does **not** include the old `docker/cluster` helper scripts referenced in earlier internal workflows. For scheduler-based execution, wrap the training entrypoint in your own Slurm or container submission script.
 
-The Dockerfile includes:
-1. **Custom RSL-RL**: Installs custom `rsl_rl` package in editable mode
-2. **Git safe directories**: Prevents ownership errors in containers
-
-### Quick Start Workflow
+Use the entrypoint that exists in this repository:
 
 ```bash
-# 1. Build Docker image
-./docker/container.sh start --suffix nav
-
-# 2. Push to cluster (converts to Singularity automatically)
-./docker/cluster/cluster_interface.sh push base-nav
-
-# 3. Submit training job
-./docker/cluster/cluster_interface.sh job base-nav \
-    "--task Isaac-Nav-PPO-B2W-v0" \
-    "--num_envs 2048" \
-    "--max_iterations 10000" \
-    "--headless"
-
-# 4. Monitor job
-squeue -u $USER
+python sru-navigation-sim/scripts/train.py \
+    --task Isaac-Nav-PPO-B2W-v0 \
+    --num_envs 2048 \
+    --max_iterations 10000 \
+    --headless \
+    --enable_cameras \
+    --device cuda:0
 ```
 
-### Configuration
+Guidance:
 
-**Step 1**: Create `.env.base-nav` profile in `docker/` directory:
-```bash
-cp docker/.env.base docker/.env.base-nav
-```
+- The correct training entrypoint is `sru-navigation-sim/scripts/train.py`.
+- Navigation tasks in this repository should launch with `--enable_cameras`.
+- On multi-GPU or cluster jobs, pass the scheduler-assigned device explicitly with `--device cuda:N`.
 
-**Step 2**: Configure `docker/cluster/.env.cluster` before deployment:
-- Set `CLUSTER_PYTHON_EXECUTABLE=source/isaaclab_nav_task/scripts/train.py`
-- Add cluster credentials and paths
-
-**Step 3**: Add cluster-specific module loads in `docker/cluster/submit_job_slurm.sh`:
-```bash
-module load eth_proxy  # Required for network access on ETH cluster
-```
-
-See the [IsaacLab cluster guide](https://isaac-sim.github.io/IsaacLab/main/source/deployment/cluster.html#cluster-guide) for details.
-
-### Training Examples
-
-```bash
-# B2W with MDPO training (10k iterations)
-./docker/cluster/cluster_interface.sh job base-nav \
-    "--task Isaac-Nav-MDPO-B2W-v0" \
-    "--num_envs 2048" \
-    "--max_iterations 10000" \
-    "--headless"
-
-# B2W with custom run name
-./docker/cluster/cluster_interface.sh job base-nav \
-    "--task Isaac-Nav-MDPO-B2W-v0" \
-    "--num_envs 2048" \
-    "--max_iterations 10000" \
-    "--run_name experiment_v1_b2w" \
-    "--headless"
-
-# AoW-D with MDPO training (10k iterations)
-./docker/cluster/cluster_interface.sh job base-nav \
-    "--task Isaac-Nav-MDPO-AoW-D-v0" \
-    "--num_envs 2048" \
-    "--max_iterations 10000" \
-    "--headless"
-
-# Quick dev test with PPO training (300 iters, tensorboard)
-./docker/cluster/cluster_interface.sh job base-nav \
-    "--task Isaac-Nav-PPO-B2W-Dev-v0" \
-    "--num_envs 32" \
-    "--headless"
-```
+If you need cluster/container deployment, follow the upstream [IsaacLab cluster guide](https://isaac-sim.github.io/IsaacLab/main/source/deployment/cluster.html#cluster-guide) and adapt it to the repository paths above.
 
 ### Troubleshooting
 
