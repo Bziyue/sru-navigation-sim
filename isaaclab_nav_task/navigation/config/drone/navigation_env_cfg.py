@@ -106,7 +106,7 @@ class DroneCommandsCfg:
         guidance_paths_data_path=os.path.join(STATIC_SCAN_DIR, "all_region_pair_paths.txt"),
         guidance_trajectories_data_path=os.path.join(STATIC_SCAN_DIR, "all_region_pair_trajectories.json"),
         precomputed_safe_points_path=DEFAULT_PRECOMPUTED_SAFE_POINTS_PATH,
-        flight_height=1.2,
+        flight_height=1.5,
         point_clearance=0.15,
         safe_point_grid_spacing=0.25,
         region_points_per_region=192,
@@ -116,6 +116,9 @@ class DroneCommandsCfg:
         visualize_region_boxes=False,
         region_box_vis_height=0.12,
         region_vis_z_offset=0.8,
+        goal_hold_time_initial_s=1.0,
+        goal_hold_time_final_s=4.0,
+        goal_hold_curriculum_steps=3000,
     )
 
 
@@ -127,7 +130,7 @@ class DroneActionsCfg:
         offset=[0.0, 0.0, 0.0, 0.0],
         use_raw_actions=True,
         policy_distr_type="gaussian",
-        nominal_height=1.2,
+        nominal_height=1.5,
         min_height=0.8,
         max_height=2.5,
         body_name="body",
@@ -255,7 +258,7 @@ class DroneRewardsCfg:
     height_reference_l2 = RewTerm(
         func=mdp.cruise_height_l2,
         weight=-0.08,
-        params={"target_height": 1.2, "release_distance": 1.0, "command_name": "robot_goal", "flat": False},
+        params={"target_height": 1.5, "release_distance": 3.0, "command_name": "robot_goal", "flat": False},
     )
     guidance_progress = RewTerm(
         func=mdp.guidance_progress_reward,

@@ -541,7 +541,10 @@ class StaticRegionGoalCommand(CommandTerm):
 
         self.steps_at_goal = torch.zeros(self.num_envs, device=self.device)
         self.time_at_goal = torch.zeros(self.num_envs, device=self.device)
-        self.required_steps_at_goal = 4.0 / self.env.step_dt
+        self.goal_hold_time_initial_s = float(cfg.goal_hold_time_initial_s)
+        self.goal_hold_time_final_s = float(cfg.goal_hold_time_final_s)
+        self.goal_hold_curriculum_steps = max(int(cfg.goal_hold_curriculum_steps), 1)
+        self.required_steps_at_goal = self.goal_hold_time_initial_s / self.env.step_dt
         self.initial_distance_to_goal = torch.zeros(self.num_envs, device=self.device)
         self.distance_to_goal = torch.zeros(self.num_envs, device=self.device)
         self.closest_distance_to_goal = torch.zeros(self.num_envs, device=self.device)
@@ -555,8 +558,25 @@ class StaticRegionGoalCommand(CommandTerm):
         self.metrics["velocity_magnitude"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["success_rate"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["goal_z"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["current_z"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["goal_distance_xy"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["goal_distance_xyz"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["goal_z_error_abs"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["in_goal_xy"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["in_goal_xyz"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["steps_at_goal"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["goal_hold_progress"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["required_goal_hold_time_s"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["active_guidance_assignments"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["active_guidance_unique"] = torch.zeros(self.num_envs, device=self.device)
+
+    def _update_goal_hold_curriculum(self) -> None:
+        """Anneal the required goal hold time from an easier initial value to the final target."""
+        progress = min(float(self.env.common_step_counter) / float(self.goal_hold_curriculum_steps), 1.0)
+        hold_time_s = self.goal_hold_time_initial_s + progress * (
+            self.goal_hold_time_final_s - self.goal_hold_time_initial_s
+        )
+        self.required_steps_at_goal = hold_time_s / self.env.step_dt
 
     def _build_region_safe_points_vis(
         self,
@@ -787,15 +807,34 @@ class StaticRegionGoalCommand(CommandTerm):
         return vis_points
 
     def _update_metrics(self):
+        self._update_goal_hold_curriculum()
         position_error = self.goal_position_world - self.robot.data.root_pos_w[:, :3]
         position_error_2d = position_error[:, :2]
         velocity_2d = self.robot.data.root_state_w[:, 7:9]
+        distance_xy = torch.norm(position_error_2d, dim=1)
+        distance_xyz = torch.norm(position_error, dim=1)
+        goal_z_error_abs = torch.abs(position_error[:, 2])
+        in_goal_xy = distance_xy < 0.5
+        in_goal_xyz = distance_xyz < 0.5
 
         self.metrics["velocity_magnitude"] = torch.norm(velocity_2d, dim=1)
         direction_to_goal = position_error_2d / torch.clamp(torch.norm(position_error_2d, dim=1, keepdim=True), min=1e-6)
         self.metrics["velocity_toward_goal"] = (velocity_2d * direction_to_goal).sum(dim=1)
         self.metrics["success_rate"] = self.success_tracker.get_success_rate()
         self.metrics["goal_z"] = self.goal_position_world[:, 2]
+        self.metrics["current_z"] = self.robot.data.root_pos_w[:, 2]
+        self.metrics["goal_distance_xy"] = distance_xy
+        self.metrics["goal_distance_xyz"] = distance_xyz
+        self.metrics["goal_z_error_abs"] = goal_z_error_abs
+        self.metrics["in_goal_xy"] = in_goal_xy.float()
+        self.metrics["in_goal_xyz"] = in_goal_xyz.float()
+        self.metrics["steps_at_goal"] = self.steps_at_goal
+        self.metrics["goal_hold_progress"] = torch.clamp(
+            self.steps_at_goal / max(float(self.required_steps_at_goal), 1.0),
+            min=0.0,
+            max=1.0,
+        )
+        self.metrics["required_goal_hold_time_s"].fill_(float(self.required_steps_at_goal * self.env.step_dt))
         active_assignments = float((self.current_guidance_ids >= 0).sum().item())
         active_unique = float(torch.unique(self.current_guidance_ids).numel())
         self.metrics["active_guidance_assignments"].fill_(active_assignments)
