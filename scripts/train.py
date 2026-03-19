@@ -45,6 +45,13 @@ parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument("--run_name", type=str, default=None, help="Custom run name suffix appended to the log directory.")
+parser.add_argument("--checkpoint", type=str, default=None, help="Path to a checkpoint to resume training from.")
+parser.add_argument(
+    "--load_optimizer",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="Whether to restore optimizer state when resuming from a checkpoint.",
+)
 
 # Append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -151,6 +158,16 @@ def main():
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     # Write git state to log
     runner.add_git_repo_to_log(__file__)
+
+    # Optionally resume from a checkpoint.
+    if args_cli.checkpoint:
+        checkpoint_path = os.path.abspath(os.path.expanduser(args_cli.checkpoint))
+        if not os.path.isfile(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+        print(f"[INFO] Resuming training from checkpoint: {checkpoint_path}")
+        runner.load(checkpoint_path, load_optimizer=args_cli.load_optimizer)
+        print(f"[INFO] Resumed from iteration {runner.current_learning_iteration}")
+
     # Save configuration
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
