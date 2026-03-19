@@ -36,6 +36,10 @@ class StaticRegionGoalCommandCfg(CommandTermCfg):
     min_goal_distance: float = 3.0
     max_goal_distance: float | None = None
     robot_to_goal_line_vis: bool = True
+    first_reach_xy_threshold: float = 0.8
+    first_reach_z_threshold: float = 0.4
+    success_xy_threshold: float = 0.7
+    success_z_threshold: float = 0.35
     goal_hold_time_initial_s: float = 1.0
     goal_hold_time_final_s: float = 4.0
-    goal_hold_curriculum_steps: int = 3000
+    goal_hold_curriculum_steps: int = 30000

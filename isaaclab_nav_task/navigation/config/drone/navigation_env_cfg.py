@@ -116,9 +116,13 @@ class DroneCommandsCfg:
         visualize_region_boxes=False,
         region_box_vis_height=0.12,
         region_vis_z_offset=0.8,
-        goal_hold_time_initial_s=1.0,
-        goal_hold_time_final_s=4.0,
-        goal_hold_curriculum_steps=3000,
+        first_reach_xy_threshold=0.8,
+        first_reach_z_threshold=0.4,
+        success_xy_threshold=0.7,
+        success_z_threshold=0.35,
+        goal_hold_time_initial_s=0.2,
+        goal_hold_time_final_s=0.8,
+        goal_hold_curriculum_steps=40000,
     )
 
 
@@ -126,7 +130,7 @@ class DroneCommandsCfg:
 class DroneActionsCfg:
     velocity_command = mdp.DroneSE2ActionCfg(
         asset_name="robot",
-        scale=[2.5, 2.5, 1.5, 0.15],
+        scale=[2.5, 2.5, 1.5, 0.8],
         offset=[0.0, 0.0, 0.0, 0.0],
         use_raw_actions=True,
         policy_distr_type="gaussian",
@@ -187,7 +191,10 @@ class DroneObservationsCfg:
 
     @configclass
     class MetricsCfg(ObsGroup):
-        in_goal = ObsTerm(func=mdp.in_goal, params={"flat": False})
+        in_goal = ObsTerm(
+            func=mdp.in_goal,
+            params={"flat": False, "xy_threshold": 0.7, "z_threshold": 0.35},
+        )
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -256,9 +263,25 @@ class DroneRewardsCfg:
         params={"action_term_name": "velocity_command"},
     )
     height_reference_l2 = RewTerm(
-        func=mdp.cruise_height_l2,
-        weight=-0.08,
-        params={"target_height": 1.5, "release_distance": 3.0, "command_name": "robot_goal", "flat": False},
+        func=mdp.adaptive_cruise_height_l2,
+        weight=-0.35,
+        params={
+            "cruise_height": 1.5,
+            "xy_follow_start_distance": 4.0,
+            "xy_follow_full_distance": 1.0,
+            "height_deadband": 0.15,
+            "command_name": "robot_goal",
+        },
+    )
+    near_goal_z_align_l2 = RewTerm(
+        func=mdp.near_goal_z_align_l2,
+        weight=-2.0,
+        params={"xy_activation_distance": 1.75, "z_deadband": 0.05, "command_name": "robot_goal"},
+    )
+    first_goal_reach_bonus = RewTerm(
+        func=mdp.first_goal_reach_bonus,
+        weight=15.0,
+        params={"command_name": "robot_goal", "xy_threshold": 0.8, "z_threshold": 0.4},
     )
     guidance_progress = RewTerm(
         func=mdp.guidance_progress_reward,
@@ -279,23 +302,52 @@ class DroneRewardsCfg:
     reach_goal_xyz_soft = RewTerm(
         func=mdp.reach_goal_xyz,
         weight=0.25,
-        params={"command_name": "robot_goal", "sigmoid": 2.5, "T_r": 1.0, "probability": 0.01, "flat": False, "ratio": False},
+        params={
+            "command_name": "robot_goal",
+            "sigmoid": 2.5,
+            "T_r": 1.0,
+            "probability": 0.01,
+            "flat": False,
+            "ratio": False,
+            "gate_xy_threshold": 0.8,
+            "gate_z_threshold": 0.4,
+        },
     )
     reach_goal_xyz_tight = RewTerm(
         func=mdp.reach_goal_xyz,
         weight=1.5,
-        params={"command_name": "robot_goal", "sigmoid": 0.25, "T_r": 0.1, "probability": 0.01, "flat": False, "ratio": False},
+        params={
+            "command_name": "robot_goal",
+            "sigmoid": 0.25,
+            "T_r": 0.1,
+            "probability": 0.01,
+            "flat": False,
+            "ratio": False,
+            "gate_xy_threshold": 0.7,
+            "gate_z_threshold": 0.35,
+        },
     )
     goal_hold_time_progress = RewTerm(
         func=mdp.goal_hold_time_progress,
         weight=0.5,
-        params={"command_name": "robot_goal", "max_hold_time_s": 4.0},
+        params={"command_name": "robot_goal", "max_hold_time_s": 0.8},
     )
 
 
 @configclass
 class DroneTerminationsCfg:
-    time_out = DoneTerm(func=mdp.time_out_navigation, time_out=True, params={"distance_threshold": 0.5, "flat": False})
+    time_out = DoneTerm(
+        func=mdp.time_out_navigation,
+        time_out=True,
+        params={
+            "distance_threshold": 0.5,
+            "flat": False,
+            "xy_threshold": 0.7,
+            "z_threshold": 0.35,
+            "first_reach_xy_threshold": 0.8,
+            "first_reach_z_threshold": 0.4,
+        },
+    )
     body_contact = DoneTerm(
         func=mdp.illegal_contact_navigation,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["body"]), "threshold": 0.01},
@@ -303,12 +355,7 @@ class DroneTerminationsCfg:
     early_termination = DoneTerm(
         func=mdp.at_goal_navigation,
         time_out=True,
-        params={"distance_threshold": 0.5, "flat": False},
-    )
-    terrain_fall = DoneTerm(
-        func=mdp.terrain_fall,
-        time_out=True,
-        params={"fall_height_threshold": 0.5},
+        params={"distance_threshold": 0.5, "flat": False, "xy_threshold": 0.7, "z_threshold": 0.35},
     )
 
 

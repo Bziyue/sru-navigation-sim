@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 
 class DroneSE2Action(ActionTerm):
-    """Map `[vx, vy, yaw_rate, dz]` commands into near-planar drone root control."""
+    """Map `[vx, vy, yaw_rate, height_residual]` commands into near-planar drone root control."""
 
     cfg: DroneSE2ActionCfg
     _env: ManagerBasedEnv
@@ -62,9 +62,8 @@ class DroneSE2Action(ActionTerm):
             raise ValueError(f"Unknown policy distribution type: {self.cfg.policy_distr_type}")
 
         self._processed_actions[:] = self._processed_actions * self._scale
-        current_heights = self._asset.data.root_pos_w[:, 2]
         self._target_heights[:] = torch.clamp(
-            current_heights + self._processed_actions[:, 3],
+            float(self.cfg.nominal_height) + self._processed_actions[:, 3],
             min=float(self.cfg.min_height),
             max=float(self.cfg.max_height),
         )

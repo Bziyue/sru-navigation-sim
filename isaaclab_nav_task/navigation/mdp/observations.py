@@ -472,6 +472,8 @@ def in_goal(
     distance_threshold: float = 0.5,
     goal_cmd_name: str = "robot_goal",
     flat: bool = True,
+    xy_threshold: float | None = None,
+    z_threshold: float | None = None,
 ) -> torch.Tensor:
     """Check if the robot is within the goal distance threshold.
 
@@ -488,8 +490,15 @@ def in_goal(
     goal_cmd_generator: RobotNavigationGoalCommand = env.command_manager._terms[goal_cmd_name]
     if flat:
         distance_goal = torch.norm(asset.data.root_pos_w[:, :2] - goal_cmd_generator.pos_command_w[:, :2], dim=1, p=2)
-    else:
-        distance_goal = torch.norm(asset.data.root_pos_w[:, :3] - goal_cmd_generator.pos_command_w[:, :3], dim=1, p=2)
+        return distance_goal < distance_threshold
+
+    position_error = asset.data.root_pos_w[:, :3] - goal_cmd_generator.pos_command_w[:, :3]
+    if xy_threshold is not None and z_threshold is not None:
+        distance_goal_xy = torch.norm(position_error[:, :2], dim=1, p=2)
+        distance_goal_z_abs = torch.abs(position_error[:, 2])
+        return torch.logical_and(distance_goal_xy < xy_threshold, distance_goal_z_abs < z_threshold)
+
+    distance_goal = torch.norm(position_error, dim=1, p=2)
     return distance_goal < distance_threshold
 
 

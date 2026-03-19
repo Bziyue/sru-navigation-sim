@@ -542,6 +542,10 @@ class StaticRegionGoalCommand(CommandTerm):
         self.steps_at_goal = torch.zeros(self.num_envs, device=self.device)
         self.steps_inside_goal_region = torch.zeros(self.num_envs, device=self.device)
         self.time_at_goal = torch.zeros(self.num_envs, device=self.device)
+        self.first_reach_xy_threshold = float(cfg.first_reach_xy_threshold)
+        self.first_reach_z_threshold = float(cfg.first_reach_z_threshold)
+        self.success_xy_threshold = float(cfg.success_xy_threshold)
+        self.success_z_threshold = float(cfg.success_z_threshold)
         self.goal_hold_time_initial_s = float(cfg.goal_hold_time_initial_s)
         self.goal_hold_time_final_s = float(cfg.goal_hold_time_final_s)
         self.goal_hold_curriculum_steps = max(int(cfg.goal_hold_curriculum_steps), 1)
@@ -552,12 +556,18 @@ class StaticRegionGoalCommand(CommandTerm):
         self.total_distance_traveled = torch.zeros(self.num_envs, device=self.device)
         self.previous_position = torch.zeros(self.num_envs, 3, device=self.device)
         self.goal_reach_count = torch.zeros(self.num_envs, device=self.device)
+        self.first_reach_latched = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.first_reach_bonus_pending = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.success_tracker = SuccessRateTracker(self.num_envs, self.device, buffer_size=10)
+        self.first_reach_tracker = SuccessRateTracker(self.num_envs, self.device, buffer_size=10)
+        self.stable_success_tracker = SuccessRateTracker(self.num_envs, self.device, buffer_size=10)
         self.success_rate_buffer = torch.full((self.num_envs, 10), -1.0, device=self.device)
 
         self.metrics["velocity_toward_goal"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["velocity_magnitude"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["success_rate"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["first_reach_success_rate"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["stable_success_rate"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["goal_z"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["current_z"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["goal_distance_xy"] = torch.zeros(self.num_envs, device=self.device)
@@ -569,6 +579,7 @@ class StaticRegionGoalCommand(CommandTerm):
         self.metrics["steps_at_goal"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["goal_hold_progress"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["required_goal_hold_time_s"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["first_reach_latched"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["active_guidance_assignments"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["active_guidance_unique"] = torch.zeros(self.num_envs, device=self.device)
 
@@ -808,6 +819,27 @@ class StaticRegionGoalCommand(CommandTerm):
         vis_points[:, 2] = self.flight_height + 0.12
         return vis_points
 
+    def _compute_goal_gate(
+        self,
+        xy_threshold: float,
+        z_threshold: float,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compute XY distance, absolute z error, and an axis-aligned goal gate mask."""
+        position_error = self.goal_position_world - self.robot.data.root_pos_w[:, :3]
+        distance_xy = torch.norm(position_error[:, :2], dim=1)
+        goal_z_error_abs = torch.abs(position_error[:, 2])
+        in_gate = torch.logical_and(distance_xy < float(xy_threshold), goal_z_error_abs < float(z_threshold))
+        return distance_xy, goal_z_error_abs, in_gate
+
+    def _update_first_reach_state(self, in_first_reach_gate: torch.Tensor) -> torch.Tensor:
+        """Latch the first time each environment enters the relaxed success gate."""
+        new_first_reach = torch.logical_and(in_first_reach_gate, ~self.first_reach_latched)
+        if torch.any(new_first_reach):
+            self.first_reach_latched |= new_first_reach
+            self.first_reach_bonus_pending |= new_first_reach
+            self.goal_reach_count += new_first_reach.float()
+        return new_first_reach
+
     def _update_metrics(self):
         self._update_goal_hold_curriculum()
         position_error = self.goal_position_world - self.robot.data.root_pos_w[:, :3]
@@ -816,9 +848,14 @@ class StaticRegionGoalCommand(CommandTerm):
         distance_xy = torch.norm(position_error_2d, dim=1)
         distance_xyz = torch.norm(position_error, dim=1)
         goal_z_error_abs = torch.abs(position_error[:, 2])
+        _, _, in_first_reach_gate = self._compute_goal_gate(
+            self.first_reach_xy_threshold,
+            self.first_reach_z_threshold,
+        )
+        self._update_first_reach_state(in_first_reach_gate)
         in_goal_region = self._points_inside_regions(self.robot.data.root_pos_w[:, :2], self.goal_region_ids)
-        in_goal_xy = distance_xy < 0.5
-        in_goal_xyz = distance_xyz < 0.5
+        in_goal_xy = distance_xy < self.success_xy_threshold
+        in_goal_xyz = torch.logical_and(in_goal_xy, goal_z_error_abs < self.success_z_threshold)
         self.steps_inside_goal_region = torch.where(
             in_goal_region,
             self.steps_inside_goal_region + 1,
@@ -829,6 +866,8 @@ class StaticRegionGoalCommand(CommandTerm):
         direction_to_goal = position_error_2d / torch.clamp(torch.norm(position_error_2d, dim=1, keepdim=True), min=1e-6)
         self.metrics["velocity_toward_goal"] = (velocity_2d * direction_to_goal).sum(dim=1)
         self.metrics["success_rate"] = self.success_tracker.get_success_rate()
+        self.metrics["first_reach_success_rate"] = self.first_reach_tracker.get_success_rate()
+        self.metrics["stable_success_rate"] = self.stable_success_tracker.get_success_rate()
         self.metrics["goal_z"] = self.goal_position_world[:, 2]
         self.metrics["current_z"] = self.robot.data.root_pos_w[:, 2]
         self.metrics["goal_distance_xy"] = distance_xy
@@ -844,6 +883,7 @@ class StaticRegionGoalCommand(CommandTerm):
             max=1.0,
         )
         self.metrics["required_goal_hold_time_s"].fill_(float(self.required_steps_at_goal * self.env.step_dt))
+        self.metrics["first_reach_latched"] = self.first_reach_latched.float()
         active_assignments = float((self.current_guidance_ids >= 0).sum().item())
         active_unique = float(torch.unique(self.current_guidance_ids).numel())
         self.metrics["active_guidance_assignments"].fill_(active_assignments)
@@ -859,6 +899,8 @@ class StaticRegionGoalCommand(CommandTerm):
         self.steps_inside_goal_region[env_ids_tensor] = 0
         self.time_at_goal[env_ids_tensor] = 0
         self.total_distance_traveled[env_ids_tensor] = 0.0
+        self.first_reach_latched[env_ids_tensor] = False
+        self.first_reach_bonus_pending[env_ids_tensor] = False
 
         sampled_guidance_indices, source_region_ids, target_region_ids = self._sample_region_pairs(len(env_ids_tensor))
 
@@ -1086,3 +1128,5 @@ StaticRegionGoalCommand.goal_reached_buffer = property(lambda self: self.success
 StaticRegionGoalCommand.goal_reached_counter = property(lambda self: self.goal_reach_count)
 StaticRegionGoalCommand.distance_traveled = property(lambda self: self.total_distance_traveled)
 StaticRegionGoalCommand.previous_pos_3d = property(lambda self: self.previous_position)
+StaticRegionGoalCommand.first_reach_buffer = property(lambda self: self.first_reach_tracker)
+StaticRegionGoalCommand.stable_success_buffer = property(lambda self: self.stable_success_tracker)

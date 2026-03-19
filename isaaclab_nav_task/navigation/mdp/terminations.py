@@ -46,6 +46,10 @@ def time_out_navigation(
     goal_cmd_name: str = "robot_goal",
     distance_threshold: float = 0.5,
     flat: bool = True,
+    xy_threshold: float | None = None,
+    z_threshold: float | None = None,
+    first_reach_xy_threshold: float | None = None,
+    first_reach_z_threshold: float | None = None,
 ) -> torch.Tensor:
     """Terminate the episode when the episode length exceeds the maximum episode length.
 
@@ -62,11 +66,25 @@ def time_out_navigation(
 
     if flat:
         distance_goal = torch.norm(asset.data.root_pos_w[:, :2] - goal_cmd_generator.goal_position_world[:, :2], dim=1)
+        at_goal = distance_goal < distance_threshold
+        first_reach_mask = at_goal
     else:
-        distance_goal = torch.norm(asset.data.root_pos_w[:, :3] - goal_cmd_generator.goal_position_world[:, :3], dim=1)
+        position_error = asset.data.root_pos_w[:, :3] - goal_cmd_generator.goal_position_world[:, :3]
+        distance_goal = torch.norm(position_error, dim=1)
+        distance_xy = torch.norm(position_error[:, :2], dim=1)
+        goal_z_error_abs = torch.abs(position_error[:, 2])
+        if xy_threshold is not None and z_threshold is not None:
+            at_goal = torch.logical_and(distance_xy < xy_threshold, goal_z_error_abs < z_threshold)
+        else:
+            at_goal = distance_goal < distance_threshold
+        if first_reach_xy_threshold is not None and first_reach_z_threshold is not None:
+            first_reach_mask = torch.logical_and(distance_xy < first_reach_xy_threshold, goal_z_error_abs < first_reach_z_threshold)
+        else:
+            first_reach_mask = at_goal
+
+    goal_cmd_generator._update_first_reach_state(first_reach_mask)
 
     # Require continuous residence inside the goal region. Leaving the goal resets the timer.
-    at_goal = distance_goal < distance_threshold
     goal_cmd_generator.time_at_goal = torch.where(
         at_goal,
         goal_cmd_generator.time_at_goal + env.step_dt,
@@ -74,11 +92,12 @@ def time_out_navigation(
     )
 
     if env_ids.numel() > 0:  # Check if env_ids is not empty
-        required_goal_time = goal_cmd_generator.required_time_at_goal_in_steps * env.step_dt
-        success_masks = goal_cmd_generator.time_at_goal >= required_goal_time
+        success_masks = goal_cmd_generator.first_reach_latched
         value_buffer = torch.zeros_like(distance_goal)  # init with 0: Fail
         value_buffer[success_masks] = 1.0  # Success
-        goal_cmd_generator.goal_reached_buffer.add(value_buffer, env_ids)
+        goal_cmd_generator.goal_reached_buffer.add(torch.zeros_like(value_buffer), env_ids)
+        goal_cmd_generator.first_reach_buffer.add(value_buffer, env_ids)
+        goal_cmd_generator.stable_success_buffer.add(torch.zeros_like(value_buffer), env_ids)
 
     return termination
 
@@ -104,7 +123,11 @@ def illegal_contact_navigation(
     env_ids = torch.where(termination)[0]
 
     if env_ids.numel() > 0:  # Check if env_ids is not empty
-        goal_cmd_generator.goal_reached_buffer.add(torch.zeros_like(termination, dtype=torch.float), env_ids)
+        failure_results = torch.zeros_like(termination, dtype=torch.float)
+        goal_cmd_generator.goal_reached_buffer.add(failure_results, env_ids)
+        first_reach_results = goal_cmd_generator.first_reach_latched.float()
+        goal_cmd_generator.first_reach_buffer.add(first_reach_results, env_ids)
+        goal_cmd_generator.stable_success_buffer.add(torch.zeros_like(first_reach_results), env_ids)
 
     return termination
 
@@ -132,7 +155,11 @@ def large_angle_termination_navigation(
     env_ids = torch.where(termination)[0]
 
     if env_ids.numel() > 0:  # Check if env_ids is not empty
-        goal_cmd_generator.goal_reached_buffer.add(torch.zeros_like(termination, dtype=torch.float), env_ids)
+        failure_results = torch.zeros_like(termination, dtype=torch.float)
+        goal_cmd_generator.goal_reached_buffer.add(failure_results, env_ids)
+        first_reach_results = goal_cmd_generator.first_reach_latched.float()
+        goal_cmd_generator.first_reach_buffer.add(first_reach_results, env_ids)
+        goal_cmd_generator.stable_success_buffer.add(torch.zeros_like(first_reach_results), env_ids)
 
     return termination
 
@@ -143,6 +170,8 @@ def at_goal_navigation(
     distance_threshold: float = 0.5,
     goal_cmd_name: str = "robot_goal",
     flat: bool = True,
+    xy_threshold: float | None = None,
+    z_threshold: float | None = None,
 ) -> torch.Tensor:
     """Terminate the episode when the goal is reached.
 
@@ -164,11 +193,18 @@ def at_goal_navigation(
     # Calculate distance to goal
     if flat:
         goal_error = torch.norm(asset.data.root_pos_w[:, :2] - goal_cmd_generator.goal_position_world[:, :2], dim=1)
+        at_goal = goal_error < distance_threshold
     else:
-        goal_error = torch.norm(asset.data.root_pos_w[:, :3] - goal_cmd_generator.goal_position_world[:, :3], dim=1)
+        position_error = asset.data.root_pos_w[:, :3] - goal_cmd_generator.goal_position_world[:, :3]
+        goal_error = torch.norm(position_error, dim=1)
+        if xy_threshold is not None and z_threshold is not None:
+            goal_error_xy = torch.norm(position_error[:, :2], dim=1)
+            goal_error_z_abs = torch.abs(position_error[:, 2])
+            at_goal = torch.logical_and(goal_error_xy < xy_threshold, goal_error_z_abs < z_threshold)
+        else:
+            at_goal = goal_error < distance_threshold
 
     # Require continuous residence inside the goal region in step units as well.
-    at_goal = goal_error < distance_threshold
     goal_cmd_generator.time_at_goal_in_steps[:] = torch.where(
         at_goal,
         goal_cmd_generator.time_at_goal_in_steps + 1,
@@ -181,7 +217,11 @@ def at_goal_navigation(
     # Update goal reached buffer if termination condition is met
     env_ids = torch.where(termination)[0]
     if env_ids.numel() > 0:  # Check if any environments have met the termination condition
-        goal_cmd_generator.goal_reached_buffer.add(torch.ones_like(termination, dtype=torch.float), env_ids)
+        success_results = torch.ones_like(termination, dtype=torch.float)
+        goal_cmd_generator.goal_reached_buffer.add(success_results, env_ids)
+        success_results = torch.ones_like(termination, dtype=torch.float)
+        goal_cmd_generator.first_reach_buffer.add(success_results, env_ids)
+        goal_cmd_generator.stable_success_buffer.add(success_results, env_ids)
 
     return termination
 

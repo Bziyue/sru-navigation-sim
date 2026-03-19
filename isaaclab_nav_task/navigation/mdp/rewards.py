@@ -89,6 +89,80 @@ def cruise_height_l2(
     return height_error * cruise_mask.float()
 
 
+def adaptive_cruise_height_l2(
+    env: "ManagerBasedRLEnv",
+    cruise_height: float,
+    xy_follow_start_distance: float,
+    xy_follow_full_distance: float,
+    height_deadband: float,
+    command_name: str = "robot_goal",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize height error against a target that blends from cruise height to goal height.
+
+    Far from the goal, the drone is encouraged to stay near ``cruise_height``. As it approaches
+    the goal in the XY plane, the target height smoothly transitions to the goal's z-value so the
+    policy can learn the final vertical alignment needed for success.
+
+    A small deadband keeps this term permissive enough for temporary obstacle avoidance maneuvers.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    goal_cmd_generator = env.command_manager._terms[command_name]
+
+    distance_xy = torch.norm(
+        asset.data.root_pos_w[:, :2] - goal_cmd_generator.goal_position_world[:, :2],
+        dim=1,
+    )
+    blend_denom = max(float(xy_follow_start_distance - xy_follow_full_distance), 1e-6)
+    goal_height_blend = torch.clamp(
+        (float(xy_follow_start_distance) - distance_xy) / blend_denom,
+        min=0.0,
+        max=1.0,
+    )
+
+    target_height = (1.0 - goal_height_blend) * float(cruise_height) + goal_height_blend * goal_cmd_generator.goal_position_world[:, 2]
+    height_error = torch.abs(asset.data.root_pos_w[:, 2] - target_height)
+    if height_deadband > 0.0:
+        height_error = torch.clamp(height_error - float(height_deadband), min=0.0)
+    return torch.square(height_error)
+
+
+def near_goal_z_align_l2(
+    env: "ManagerBasedRLEnv",
+    xy_activation_distance: float,
+    z_deadband: float,
+    command_name: str = "robot_goal",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize absolute z error more strongly once the robot is near the goal in XY."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    goal_cmd_generator = env.command_manager._terms[command_name]
+
+    position_error = goal_cmd_generator.goal_position_world[:, :3] - asset.data.root_pos_w[:, :3]
+    distance_xy = torch.norm(position_error[:, :2], dim=1)
+    goal_z_error_abs = torch.abs(position_error[:, 2])
+    z_error = torch.clamp(goal_z_error_abs - float(z_deadband), min=0.0)
+    near_goal_mask = (distance_xy < float(xy_activation_distance)).float()
+    return torch.square(z_error) * near_goal_mask
+
+
+def first_goal_reach_bonus(
+    env: "ManagerBasedRLEnv",
+    command_name: str = "robot_goal",
+    xy_threshold: float | None = None,
+    z_threshold: float | None = None,
+) -> torch.Tensor:
+    """Emit a one-step bonus when the robot first enters the relaxed success gate."""
+    goal_cmd_generator = env.command_manager._terms[command_name]
+    reach_xy_threshold = float(xy_threshold) if xy_threshold is not None else float(goal_cmd_generator.first_reach_xy_threshold)
+    reach_z_threshold = float(z_threshold) if z_threshold is not None else float(goal_cmd_generator.first_reach_z_threshold)
+    _, _, in_first_reach_gate = goal_cmd_generator._compute_goal_gate(reach_xy_threshold, reach_z_threshold)
+    goal_cmd_generator._update_first_reach_state(in_first_reach_gate)
+    bonus = goal_cmd_generator.first_reach_bonus_pending.float()
+    goal_cmd_generator.first_reach_bonus_pending[:] = False
+    return bonus
+
+
 def lateral_movement(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Reward the agent for moving laterally using L1-Kernel.
 
@@ -129,6 +203,8 @@ def reach_goal_xyz(
     probability: float,
     flat: bool,
     ratio: bool,
+    gate_xy_threshold: float | None = None,
+    gate_z_threshold: float | None = None,
 ) -> torch.Tensor:
     """Reward goal reaching with configurable sigmoid shaping.
 
@@ -161,8 +237,25 @@ def reach_goal_xyz(
     random_mask = torch.rand_like(t.float()) < probability
     timeup_mask = torch.logical_or(timeup_mask, random_mask)
 
-    arrive_mask = goal_cmd_generator.time_at_goal > 0.0
-    reward_mask = torch.logical_or(timeup_mask, arrive_mask)
+    if flat:
+        current_gate_mask = xyz_error < sigmoid
+    else:
+        resolved_gate_xy_threshold = gate_xy_threshold
+        resolved_gate_z_threshold = gate_z_threshold
+        if resolved_gate_xy_threshold is None:
+            resolved_gate_xy_threshold = getattr(goal_cmd_generator, "first_reach_xy_threshold", None)
+        if resolved_gate_z_threshold is None:
+            resolved_gate_z_threshold = getattr(goal_cmd_generator, "first_reach_z_threshold", None)
+
+        if resolved_gate_xy_threshold is not None and resolved_gate_z_threshold is not None:
+            _, _, current_gate_mask = goal_cmd_generator._compute_goal_gate(
+                float(resolved_gate_xy_threshold),
+                float(resolved_gate_z_threshold),
+            )
+        else:
+            current_gate_mask = xyz_error < sigmoid
+
+    reward_mask = torch.logical_or(timeup_mask, current_gate_mask)
 
     if ratio:
         # Calculate the travel distance ratio relative to the initial goal distance
