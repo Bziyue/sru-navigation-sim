@@ -286,6 +286,11 @@ class DroneRewardsCfg:
         weight=1.5,
         params={"command_name": "robot_goal", "sigmoid": 0.25, "T_r": 0.1, "probability": 0.01, "flat": False, "ratio": False},
     )
+    goal_hold_time_progress = RewTerm(
+        func=mdp.goal_hold_time_progress,
+        weight=0.5,
+        params={"command_name": "robot_goal", "max_hold_time_s": 4.0},
+    )
 
 
 @configclass

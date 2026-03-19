@@ -178,6 +178,17 @@ def reach_goal_xyz(
     return reward
 
 
+def goal_hold_time_progress(
+    env: "ManagerBasedRLEnv",
+    command_name: str = "robot_goal",
+    max_hold_time_s: float = 4.0,
+) -> torch.Tensor:
+    """Reward continuous residence in the goal region with linear saturation."""
+    goal_cmd_generator: RobotNavigationGoalCommand = env.command_manager._terms[command_name]
+    dwell_time_s = goal_cmd_generator.time_at_goal
+    return torch.clamp(dwell_time_s / max(max_hold_time_s, 1e-6), min=0.0, max=1.0)
+
+
 def backward_movement_penalty(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Small penalty for backward movement as a regularization term.
 
