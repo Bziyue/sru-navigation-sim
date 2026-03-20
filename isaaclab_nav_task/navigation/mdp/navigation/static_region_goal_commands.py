@@ -561,6 +561,7 @@ class StaticRegionGoalCommand(CommandTerm):
         self.success_tracker = SuccessRateTracker(self.num_envs, self.device, buffer_size=10)
         self.first_reach_tracker = SuccessRateTracker(self.num_envs, self.device, buffer_size=10)
         self.stable_success_tracker = SuccessRateTracker(self.num_envs, self.device, buffer_size=10)
+        self.at_min_height_threshold = float(self.env.cfg.actions.velocity_command.min_height) + 0.05
         self.success_rate_buffer = torch.full((self.num_envs, 10), -1.0, device=self.device)
 
         self.metrics["velocity_toward_goal"] = torch.zeros(self.num_envs, device=self.device)
@@ -570,6 +571,7 @@ class StaticRegionGoalCommand(CommandTerm):
         self.metrics["stable_success_rate"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["goal_z"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["current_z"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["at_min_height_rate"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["goal_distance_xy"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["goal_distance_xyz"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["goal_z_error_abs"] = torch.zeros(self.num_envs, device=self.device)
@@ -870,6 +872,9 @@ class StaticRegionGoalCommand(CommandTerm):
         self.metrics["stable_success_rate"] = self.stable_success_tracker.get_success_rate()
         self.metrics["goal_z"] = self.goal_position_world[:, 2]
         self.metrics["current_z"] = self.robot.data.root_pos_w[:, 2]
+        self.metrics["at_min_height_rate"] = (
+            self.robot.data.root_pos_w[:, 2] < float(self.at_min_height_threshold)
+        ).float()
         self.metrics["goal_distance_xy"] = distance_xy
         self.metrics["goal_distance_xyz"] = distance_xyz
         self.metrics["goal_z_error_abs"] = goal_z_error_abs

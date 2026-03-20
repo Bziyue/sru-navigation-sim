@@ -257,6 +257,11 @@ class DroneRewardsCfg:
         weight=-10.0,
         params={"min_height": 0.8, "max_height": 2.5},
     )
+    height_hold_action_l1 = RewTerm(
+        func=mdp.height_hold_action_l1,
+        weight=-0.1,
+        params={"action_term_name": "velocity_command"},
+    )
     height_action_rate_l1 = RewTerm(
         func=mdp.height_action_rate_l1,
         weight=-0.08,
@@ -264,19 +269,19 @@ class DroneRewardsCfg:
     )
     height_reference_l2 = RewTerm(
         func=mdp.adaptive_cruise_height_l2,
-        weight=-0.35,
+        weight=-1.0,
         params={
             "cruise_height": 1.5,
-            "xy_follow_start_distance": 4.0,
-            "xy_follow_full_distance": 1.0,
-            "height_deadband": 0.15,
+            "xy_follow_start_distance": 6.0,
+            "xy_follow_full_distance": 2.0,
+            "height_deadband": 0.05,
             "command_name": "robot_goal",
         },
     )
     near_goal_z_align_l2 = RewTerm(
         func=mdp.near_goal_z_align_l2,
-        weight=-2.0,
-        params={"xy_activation_distance": 1.75, "z_deadband": 0.05, "command_name": "robot_goal"},
+        weight=-5.0,
+        params={"xy_activation_distance": 5.0, "z_deadband": 0.05, "command_name": "robot_goal"},
     )
     first_goal_reach_bonus = RewTerm(
         func=mdp.first_goal_reach_bonus,
@@ -301,7 +306,7 @@ class DroneRewardsCfg:
     episode_termination = RewTerm(func=mdp.is_terminated, weight=-50.0)
     reach_goal_xyz_soft = RewTerm(
         func=mdp.reach_goal_xyz,
-        weight=0.25,
+        weight=0.75,
         params={
             "command_name": "robot_goal",
             "sigmoid": 2.5,
@@ -309,8 +314,8 @@ class DroneRewardsCfg:
             "probability": 0.01,
             "flat": False,
             "ratio": False,
-            "gate_xy_threshold": 0.8,
-            "gate_z_threshold": 0.4,
+            "gate_xy_threshold": 3.0,
+            "gate_z_threshold": 1.0,
         },
     )
     reach_goal_xyz_tight = RewTerm(
