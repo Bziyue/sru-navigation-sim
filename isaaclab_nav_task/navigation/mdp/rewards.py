@@ -154,10 +154,7 @@ def first_goal_reach_bonus(
 ) -> torch.Tensor:
     """Emit a one-step bonus when the robot first enters the relaxed success gate."""
     goal_cmd_generator = env.command_manager._terms[command_name]
-    reach_xy_threshold = float(xy_threshold) if xy_threshold is not None else float(goal_cmd_generator.first_reach_xy_threshold)
-    reach_z_threshold = float(z_threshold) if z_threshold is not None else float(goal_cmd_generator.first_reach_z_threshold)
-    _, _, in_first_reach_gate = goal_cmd_generator._compute_goal_gate(reach_xy_threshold, reach_z_threshold)
-    goal_cmd_generator._update_first_reach_state(in_first_reach_gate)
+    goal_cmd_generator._refresh_first_reach_from_current_pose(xy_threshold=xy_threshold, z_threshold=z_threshold)
     bonus = goal_cmd_generator.first_reach_bonus_pending.float()
     goal_cmd_generator.first_reach_bonus_pending[:] = False
     return bonus

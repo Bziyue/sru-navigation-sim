@@ -556,6 +556,7 @@ class StaticRegionGoalCommand(CommandTerm):
         self.total_distance_traveled = torch.zeros(self.num_envs, device=self.device)
         self.previous_position = torch.zeros(self.num_envs, 3, device=self.device)
         self.goal_reach_count = torch.zeros(self.num_envs, device=self.device)
+        self.first_reach_event_count = torch.zeros(self.num_envs, device=self.device)
         self.first_reach_latched = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.first_reach_bonus_pending = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.success_tracker = SuccessRateTracker(self.num_envs, self.device, buffer_size=10)
@@ -569,6 +570,7 @@ class StaticRegionGoalCommand(CommandTerm):
         self.metrics["success_rate"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["first_reach_success_rate"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["stable_success_rate"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["first_goal_reach_count_raw"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["goal_z"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["current_z"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["at_min_height_rate"] = torch.zeros(self.num_envs, device=self.device)
@@ -840,7 +842,20 @@ class StaticRegionGoalCommand(CommandTerm):
             self.first_reach_latched |= new_first_reach
             self.first_reach_bonus_pending |= new_first_reach
             self.goal_reach_count += new_first_reach.float()
+            self.first_reach_event_count += new_first_reach.float()
         return new_first_reach
+
+    def _refresh_first_reach_from_current_pose(
+        self,
+        xy_threshold: float | None = None,
+        z_threshold: float | None = None,
+    ) -> torch.Tensor:
+        """Update the first-reach latch from the robot's current world pose."""
+        _, _, in_first_reach_gate = self._compute_goal_gate(
+            self.first_reach_xy_threshold if xy_threshold is None else float(xy_threshold),
+            self.first_reach_z_threshold if z_threshold is None else float(z_threshold),
+        )
+        return self._update_first_reach_state(in_first_reach_gate)
 
     def _update_metrics(self):
         self._update_goal_hold_curriculum()
@@ -850,11 +865,7 @@ class StaticRegionGoalCommand(CommandTerm):
         distance_xy = torch.norm(position_error_2d, dim=1)
         distance_xyz = torch.norm(position_error, dim=1)
         goal_z_error_abs = torch.abs(position_error[:, 2])
-        _, _, in_first_reach_gate = self._compute_goal_gate(
-            self.first_reach_xy_threshold,
-            self.first_reach_z_threshold,
-        )
-        self._update_first_reach_state(in_first_reach_gate)
+        self._refresh_first_reach_from_current_pose()
         in_goal_region = self._points_inside_regions(self.robot.data.root_pos_w[:, :2], self.goal_region_ids)
         in_goal_xy = distance_xy < self.success_xy_threshold
         in_goal_xyz = torch.logical_and(in_goal_xy, goal_z_error_abs < self.success_z_threshold)
@@ -870,6 +881,7 @@ class StaticRegionGoalCommand(CommandTerm):
         self.metrics["success_rate"] = self.success_tracker.get_success_rate()
         self.metrics["first_reach_success_rate"] = self.first_reach_tracker.get_success_rate()
         self.metrics["stable_success_rate"] = self.stable_success_tracker.get_success_rate()
+        self.metrics["first_goal_reach_count_raw"] = self.first_reach_event_count
         self.metrics["goal_z"] = self.goal_position_world[:, 2]
         self.metrics["current_z"] = self.robot.data.root_pos_w[:, 2]
         self.metrics["at_min_height_rate"] = (
@@ -904,6 +916,7 @@ class StaticRegionGoalCommand(CommandTerm):
         self.steps_inside_goal_region[env_ids_tensor] = 0
         self.time_at_goal[env_ids_tensor] = 0
         self.total_distance_traveled[env_ids_tensor] = 0.0
+        self.first_reach_event_count[env_ids_tensor] = 0.0
         self.first_reach_latched[env_ids_tensor] = False
         self.first_reach_bonus_pending[env_ids_tensor] = False
 
@@ -964,13 +977,12 @@ class StaticRegionGoalCommand(CommandTerm):
         if env_ids is None:
             env_ids = slice(None)
 
-        self.command_counter[env_ids] = 0
-        self._resample(env_ids)
-
         extras = {}
         for name, value in self.metrics.items():
             extras[name] = torch.mean(value[env_ids]).item()
             value[env_ids] = 0.0
+        self.command_counter[env_ids] = 0
+        self._resample(env_ids)
         return extras
 
     def _set_debug_vis_impl(self, debug_vis: bool):

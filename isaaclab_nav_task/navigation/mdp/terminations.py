@@ -123,6 +123,7 @@ def illegal_contact_navigation(
     env_ids = torch.where(termination)[0]
 
     if env_ids.numel() > 0:  # Check if env_ids is not empty
+        goal_cmd_generator._refresh_first_reach_from_current_pose()
         failure_results = torch.zeros_like(termination, dtype=torch.float)
         goal_cmd_generator.goal_reached_buffer.add(failure_results, env_ids)
         first_reach_results = goal_cmd_generator.first_reach_latched.float()
@@ -155,6 +156,7 @@ def large_angle_termination_navigation(
     env_ids = torch.where(termination)[0]
 
     if env_ids.numel() > 0:  # Check if env_ids is not empty
+        goal_cmd_generator._refresh_first_reach_from_current_pose()
         failure_results = torch.zeros_like(termination, dtype=torch.float)
         goal_cmd_generator.goal_reached_buffer.add(failure_results, env_ids)
         first_reach_results = goal_cmd_generator.first_reach_latched.float()
