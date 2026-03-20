@@ -28,6 +28,10 @@ PLANNING_FREQ = 5.0
 STATIC_SCAN_DIR = os.path.join(ISAACLAB_NAV_TASKS_ASSETS_DIR, "Environments", "StaticScan")
 STATIC_VISUAL_MESH_PRIM_PATH = "/World/StaticMesh"
 STATIC_COLLISION_MESH_PRIM_PATH = "/World/MapMesh"
+DEFAULT_PRECOMPUTED_SAFE_POINTS_PATH = os.path.join(
+    STATIC_SCAN_DIR,
+    "DR_region_safe_points_contact_0p2m_1p2_to_2p0_eroded_0p4m.npz",
+)
 
 
 @configclass
@@ -101,6 +105,7 @@ class DroneCommandsCfg:
         spawn_polygon_csv_path=os.path.join(STATIC_SCAN_DIR, "polygon_coords.csv"),
         guidance_paths_data_path=os.path.join(STATIC_SCAN_DIR, "all_region_pair_paths.txt"),
         guidance_trajectories_data_path=os.path.join(STATIC_SCAN_DIR, "all_region_pair_trajectories.json"),
+        precomputed_safe_points_path=DEFAULT_PRECOMPUTED_SAFE_POINTS_PATH,
         flight_height=1.2,
         point_clearance=0.15,
         safe_point_grid_spacing=0.25,
