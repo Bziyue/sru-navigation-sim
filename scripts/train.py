@@ -50,8 +50,9 @@ parser.add_argument("--run_name", type=str, default=None, help="Custom run name 
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 
-# navigation tasks in this repo rely on camera-based observations
-args_cli.enable_cameras = True
+# Enable camera rendering only when explicitly requested or when video capture needs it.
+if args_cli.video:
+    args_cli.enable_cameras = True
 
 # Launch simulation
 app_launcher = AppLauncher(args_cli)
