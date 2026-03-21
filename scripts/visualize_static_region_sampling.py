@@ -59,7 +59,7 @@ def main() -> None:
 
     env = gym.make(args_cli.task, cfg=env_cfg)
     base_env = env.unwrapped
-    action_dim = base_env.action_manager.get_term("velocity_command").action_dim
+    action_dim = base_env.action_manager.get_term("accel_command").action_dim
     zero_actions = torch.zeros((base_env.num_envs, action_dim), dtype=torch.float32, device=base_env.device)
 
     env.reset()

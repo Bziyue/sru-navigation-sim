@@ -121,7 +121,7 @@ class DroneCommandsCfg:
 
 @configclass
 class DroneActionsCfg:
-    velocity_command = mdp.DroneSE2ActionCfg(
+    accel_command = mdp.DroneAccelActionCfg(
         asset_name="robot",
         scale=[2.5, 2.5, 1.5],
         offset=[0.0, 0.0, 0.0],
@@ -129,6 +129,10 @@ class DroneActionsCfg:
         policy_distr_type="gaussian",
         target_height=1.2,
         body_name="body",
+        max_speed=2.5,
+        use_controller=False,
+        controller_decimation=2,
+        controller_k_max_ang=30.0,
     )
 
 
@@ -299,6 +303,7 @@ class DroneStaticNavigationEnvCfg(ManagerBasedRLEnvCfg):
         self.episode_length_s = 60.0
         self.sim.render_interval = self.decimation
         self.sim.disable_contact_processing = False
+        self.scene.robot.spawn.rigid_props.disable_gravity = not self.actions.accel_command.use_controller
 
         from isaaclab_nav_task.navigation.mdp.depth_utils.camera_config import get_camera_config
         from isaaclab_nav_task.navigation.mdp.observations import initialize_depth_noise_generator
