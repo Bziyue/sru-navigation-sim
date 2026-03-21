@@ -46,13 +46,13 @@ class DroneSwarmCurriculumStageCfg:
     reward_guidance_progress: float = 2.0
     reward_guidance_wrong_way: float = 0.10
     reward_guidance_lateral_error: float = 0.05
-    reward_centroid_goal_soft: float = 1.4
-    reward_centroid_goal_tight: float = 4.0
-    reward_cohesion_dispersion_l1: float = 0.10
-    reward_agent_collision: float = 6.0
-    reward_agent_separation: float = 0.10
-    reward_team_success: float = 15.0
-    reward_episode_failure: float = 6.0
+    reward_centroid_goal_soft: float = 0.9
+    reward_centroid_goal_tight: float = 2.2
+    reward_cohesion_dispersion_l1: float = 0.18
+    reward_agent_collision: float = 10.0
+    reward_agent_separation: float = 0.25
+    reward_team_success: float = 10.0
+    reward_episode_failure: float = 5.0
 
 
 @configclass
@@ -177,9 +177,9 @@ class DroneSwarmStaticNavigationEnvCfg(DirectMARLEnvCfg):
     max_agent_distance_policy: float = 3.0
     max_agent_distance_critic: float = 5.0
 
-    agent_spawn_separation: float = 0.45
+    agent_spawn_separation: float = 0.50
     agent_collision_distance: float = 0.25
-    agent_separation_distance: float = 0.40
+    agent_separation_distance: float = 0.45
     body_contact_force_threshold: float = 0.15
     contact_failure_debounce_steps: int = 2
     fall_height_threshold: float = 0.5
@@ -204,19 +204,19 @@ class DroneSwarmStaticNavigationEnvCfg(DirectMARLEnvCfg):
     reward_guidance_progress: float = 2.0
     reward_guidance_wrong_way: float = 0.10
     reward_guidance_lateral_error: float = 0.05
-    reward_centroid_goal_soft: float = 1.4
-    reward_centroid_goal_tight: float = 4.0
-    reward_cohesion_dispersion_l1: float = 0.10
-    reward_agent_collision: float = 6.0
-    reward_agent_separation: float = 0.10
-    reward_team_success: float = 15.0
-    reward_episode_failure: float = 6.0
+    reward_centroid_goal_soft: float = 0.9
+    reward_centroid_goal_tight: float = 2.2
+    reward_cohesion_dispersion_l1: float = 0.18
+    reward_agent_collision: float = 10.0
+    reward_agent_separation: float = 0.25
+    reward_team_success: float = 10.0
+    reward_episode_failure: float = 5.0
 
     curriculum_enabled: bool = True
     curriculum_success_rate_ema_alpha: float = 0.05
     curriculum_success_rate_thresholds: tuple[float, float] = (0.60, 0.75)
-    curriculum_min_common_steps: tuple[int, int] = (1000, 4000)
-    curriculum_min_completed_episodes: tuple[int, int] = (200, 600)
+    curriculum_min_common_steps: tuple[int, int] = (6000, 20000)
+    curriculum_min_completed_episodes: tuple[int, int] = (5000, 20000)
     curriculum_stage_1: DroneSwarmCurriculumStageCfg = DroneSwarmCurriculumStageCfg()
     curriculum_stage_2: DroneSwarmCurriculumStageCfg = DroneSwarmCurriculumStageCfg(
         body_contact_force_threshold=0.08,
@@ -230,13 +230,13 @@ class DroneSwarmStaticNavigationEnvCfg(DirectMARLEnvCfg):
         reward_guidance_progress=1.5,
         reward_guidance_wrong_way=0.15,
         reward_guidance_lateral_error=0.08,
-        reward_centroid_goal_soft=0.9,
-        reward_centroid_goal_tight=3.0,
-        reward_cohesion_dispersion_l1=0.18,
-        reward_agent_collision=10.0,
-        reward_agent_separation=0.18,
+        reward_centroid_goal_soft=0.6,
+        reward_centroid_goal_tight=1.6,
+        reward_cohesion_dispersion_l1=0.22,
+        reward_agent_collision=12.0,
+        reward_agent_separation=0.30,
         reward_team_success=12.0,
-        reward_episode_failure=10.0,
+        reward_episode_failure=8.0,
     )
     curriculum_stage_3: DroneSwarmCurriculumStageCfg = DroneSwarmCurriculumStageCfg(
         body_contact_force_threshold=0.03,
@@ -250,13 +250,13 @@ class DroneSwarmStaticNavigationEnvCfg(DirectMARLEnvCfg):
         reward_guidance_progress=1.0,
         reward_guidance_wrong_way=0.20,
         reward_guidance_lateral_error=0.12,
-        reward_centroid_goal_soft=0.5,
-        reward_centroid_goal_tight=2.0,
-        reward_cohesion_dispersion_l1=0.30,
+        reward_centroid_goal_soft=0.4,
+        reward_centroid_goal_tight=1.0,
+        reward_cohesion_dispersion_l1=0.35,
         reward_agent_collision=16.0,
-        reward_agent_separation=0.30,
+        reward_agent_separation=0.40,
         reward_team_success=10.0,
-        reward_episode_failure=25.0,
+        reward_episode_failure=15.0,
     )
 
     def __post_init__(self):
