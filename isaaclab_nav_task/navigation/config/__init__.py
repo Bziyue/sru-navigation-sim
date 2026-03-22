@@ -8,3 +8,4 @@
 from .b2w import *
 from .aow_d import *
 from .drone import *
+from .drone_swarm import *

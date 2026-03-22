@@ -16,6 +16,23 @@ class _MeshData:
     face_indices: list[int]
 
 
+def _get_all_matching_child_prims(stage: Usd.Stage, prim_path: str, predicate):
+    """Compat wrapper for Isaac Lab versions with and without traverse_instance_prims."""
+    try:
+        return sim_utils.get_all_matching_child_prims(
+            prim_path,
+            predicate,
+            stage=stage,
+            traverse_instance_prims=True,
+        )
+    except TypeError:
+        return sim_utils.get_all_matching_child_prims(
+            prim_path,
+            predicate,
+            stage=stage,
+        )
+
+
 def _transform_points(points: list[Gf.Vec3f], transform: Gf.Matrix4d) -> list[Gf.Vec3f]:
     """Apply a world transform to mesh points."""
     transformed_points: list[Gf.Vec3f] = []
@@ -48,9 +65,7 @@ def _extract_mesh_data(mesh: UsdGeom.Mesh, transform: Gf.Matrix4d | None = None)
 def _collect_prototype_meshes(stage: Usd.Stage, prototype_prim: Usd.Prim) -> dict[str, _MeshData]:
     """Collect all mesh geometry under a point-instancer prototype."""
     prototype_meshes: dict[str, _MeshData] = {}
-    for child in sim_utils.get_all_matching_child_prims(
-        prototype_prim.GetPath(), lambda prim: prim.IsA(UsdGeom.Mesh), stage=stage, traverse_instance_prims=True
-    ):
+    for child in _get_all_matching_child_prims(stage, prototype_prim.GetPath(), lambda prim: prim.IsA(UsdGeom.Mesh)):
         mesh_data = _extract_mesh_data(UsdGeom.Mesh(child))
         if mesh_data is None:
             continue
@@ -166,9 +181,7 @@ def build_merged_collision_mesh(
 
     for source_path in matched_paths:
         source_prim = stage.GetPrimAtPath(source_path)
-        for prim in sim_utils.get_all_matching_child_prims(
-            source_path, lambda candidate: True, stage=stage, traverse_instance_prims=True
-        ):
+        for prim in _get_all_matching_child_prims(stage, source_path, lambda candidate: True):
             prim_path = prim.GetPath().pathString
             if "/prototypes/" in prim_path:
                 continue

@@ -7,6 +7,7 @@
 
 from .navigation_env import NavigationEnv
 from .navigation_env_cfg import *
+from .swarm_navigation_env import DroneSwarmNavigationEnv
 
 # Import robot-specific configurations
 from .config import *
