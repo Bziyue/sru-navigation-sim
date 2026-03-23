@@ -332,6 +332,8 @@ class DroneStaticNavigationEnvCfg_PLAY(DroneStaticNavigationEnvCfg):
         self.scene.num_envs = 1
         self.commands.robot_goal.debug_vis = True
         self.observations.policy.enable_corruption = False
+        # Match PlayFast so local playback updates more smoothly.
+        self.sim.render_interval = 4
 
 
 @configclass
