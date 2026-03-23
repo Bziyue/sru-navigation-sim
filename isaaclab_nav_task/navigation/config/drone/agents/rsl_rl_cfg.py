@@ -58,3 +58,18 @@ class DroneStaticNavPPORunnerDevCfg(DroneStaticNavPPORunnerCfg):
         self.max_iterations = 300
         self.experiment_name = "drone_static_navigation_ppo_dev"
         self.logger = "tensorboard"
+
+
+
+@configclass
+class DroneStaticNavPPOCompatRunnerCfg(DroneStaticNavPPORunnerCfg):
+    experiment_name = "drone_static_navigation_ppo_swarm_compat"
+
+
+@configclass
+class DroneStaticNavPPOCompatRunnerDevCfg(DroneStaticNavPPOCompatRunnerCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.max_iterations = 300
+        self.experiment_name = "drone_static_navigation_ppo_swarm_compat_dev"
+        self.logger = "tensorboard"

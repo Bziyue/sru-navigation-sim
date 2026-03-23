@@ -32,6 +32,7 @@ DEFAULT_PRECOMPUTED_SAFE_POINTS_PATH = os.path.join(
     STATIC_SCAN_DIR,
     "DR_region_safe_points_contact_0p2m_1p2_to_2p0_eroded_0p4m.npz",
 )
+SWARM_TEAMMATE_FEATURE_DIM = 24
 
 
 @configclass
@@ -168,6 +169,67 @@ class DroneObservationsCfg:
             func=mdp.generated_commands_reshaped,
             params={"command_name": "robot_goal", "flatten": True},
         )
+        time_normalized = ObsTerm(func=mdp.time_normalized, params={"command_name": "robot_goal"})
+        height_scan_critic = ObsTerm(
+            func=mdp.height_scan_feat,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner_critic")},
+        )
+        depth_image = ObsTerm(
+            func=mdp.depth_image_prefect,
+            params={"sensor_cfg": SceneEntityCfg("raycast_camera")},
+        )
+
+        def __post_init__(self):
+            self.enable_corruption = True
+            self.concatenate_terms = True
+
+    @configclass
+    class MetricsCfg(ObsGroup):
+        in_goal = ObsTerm(func=mdp.in_goal)
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = False
+
+    metrics: MetricsCfg = MetricsCfg()
+    policy: PolicyCfg = PolicyCfg()
+    critic: CriticCfg = CriticCfg()
+
+
+@configclass
+class DroneSwarmCompatObservationsCfg:
+    @configclass
+    class PolicyCfg(ObsGroup):
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel_delayed, noise=Unoise(n_min=-0.2, n_max=0.2))
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel_delayed, noise=Unoise(n_min=-0.1, n_max=0.1))
+        projected_gravity = ObsTerm(func=mdp.projected_gravity_delayed, noise=Unoise(n_min=-0.1, n_max=0.1))
+        last_action = ObsTerm(func=mdp.last_action)
+        target_position = ObsTerm(
+            func=mdp.generated_commands_reshaped_delayed,
+            params={"command_name": "robot_goal", "flatten": True},
+            noise=DeltaTransformationNoiseCfg(rotation=0.1, translation=0.5, noise_prob=0.1, remove_dist=False),
+        )
+        teammate_features = ObsTerm(func=mdp.zero_teammate_features, params={"feature_dim": SWARM_TEAMMATE_FEATURE_DIM})
+        depth_image = ObsTerm(
+            func=mdp.depth_image_noisy_delayed,
+            params={"sensor_cfg": SceneEntityCfg("raycast_camera")},
+        )
+
+        def __post_init__(self):
+            self.enable_corruption = True
+            self.concatenate_terms = True
+
+    @configclass
+    class CriticCfg(ObsGroup):
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
+        projected_gravity = ObsTerm(func=mdp.projected_gravity)
+        last_action = ObsTerm(func=mdp.last_action)
+        target_position = ObsTerm(
+            func=mdp.generated_commands_reshaped,
+            params={"command_name": "robot_goal", "flatten": True},
+        )
+        teammate_features = ObsTerm(func=mdp.zero_teammate_features, params={"feature_dim": SWARM_TEAMMATE_FEATURE_DIM})
         time_normalized = ObsTerm(func=mdp.time_normalized, params={"command_name": "robot_goal"})
         height_scan_critic = ObsTerm(
             func=mdp.height_scan_feat,
@@ -345,3 +407,15 @@ class DroneStaticNavigationEnvCfg_PLAY_FAST(DroneStaticNavigationEnvCfg):
         self.observations.policy.enable_corruption = False
         # Render more frequently than the 5 Hz control loop so local playback looks smooth.
         self.sim.render_interval = 4
+
+
+@configclass
+class DroneStaticNavigationEnvCfg_SWARM_COMPAT(DroneStaticNavigationEnvCfg):
+    observations: DroneSwarmCompatObservationsCfg = DroneSwarmCompatObservationsCfg()
+
+
+@configclass
+class DroneStaticNavigationEnvCfg_SWARM_COMPAT_DEV(DroneStaticNavigationEnvCfg_SWARM_COMPAT):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 64

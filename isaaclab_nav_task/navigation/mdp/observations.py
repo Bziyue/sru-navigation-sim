@@ -489,6 +489,11 @@ def in_goal(
     return distance_goal < distance_threshold
 
 
+def zero_teammate_features(env: ManagerBasedRLEnv, feature_dim: int = 24) -> torch.Tensor:
+    """Return a fixed-width zero vector to preserve swarm-compatible observation channels."""
+    return torch.zeros((env.num_envs, feature_dim), device=env.device, dtype=torch.float32)
+
+
 def time_normalized(env: ManagerBasedRLEnv, command_name: str = "robot_goal") -> torch.Tensor:
     """Time normalized to the maximum episode length.
 
