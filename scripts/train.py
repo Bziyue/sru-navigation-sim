@@ -44,7 +44,11 @@ parser.add_argument("--num_envs", type=int, default=None, help="Number of enviro
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
+parser.add_argument("--experiment_name", type=str, default=None, help="Override experiment folder name.")
 parser.add_argument("--run_name", type=str, default=None, help="Custom run name suffix appended to the log directory.")
+parser.add_argument("--resume", action="store_true", default=False, help="Resume training from a checkpoint.")
+parser.add_argument("--load_run", type=str, default=None, help="Run directory name to resume from.")
+parser.add_argument("--checkpoint", type=str, default=None, help="Checkpoint file name or absolute path.")
 
 # Append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -124,8 +128,16 @@ def main():
         agent_cfg.seed = args_cli.seed
     if args_cli.max_iterations is not None:
         agent_cfg.max_iterations = args_cli.max_iterations
+    if args_cli.experiment_name is not None:
+        agent_cfg.experiment_name = args_cli.experiment_name
     if args_cli.run_name is not None:
         agent_cfg.run_name = args_cli.run_name
+    if args_cli.resume:
+        agent_cfg.resume = True
+    if args_cli.load_run is not None:
+        agent_cfg.load_run = args_cli.load_run
+    if args_cli.checkpoint is not None:
+        agent_cfg.load_checkpoint = args_cli.checkpoint
 
     # Create the environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -139,6 +151,12 @@ def main():
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
+    resume_path = None
+    if agent_cfg.resume:
+        if os.path.isfile(agent_cfg.load_checkpoint):
+            resume_path = os.path.abspath(agent_cfg.load_checkpoint)
+        else:
+            resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
     # Specify run directory based on timestamp
     log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     if agent_cfg.run_name:
@@ -156,6 +174,9 @@ def main():
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     # Write git state to log
     runner.add_git_repo_to_log(__file__)
+    if resume_path is not None:
+        print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+        runner.load(resume_path)
     # Save configuration
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)

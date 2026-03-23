@@ -219,6 +219,8 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
                 teammate_sort_indices.unsqueeze(-1).expand(-1, -1, teammate_feature_stack.shape[-1]),
             )
             teammate_obs = teammate_feature_stack.reshape(self.num_envs, -1)
+            if self.cfg.disable_teammate_observations:
+                teammate_obs = torch.zeros_like(teammate_obs)
 
             proprio = torch.cat(
                 (
@@ -264,6 +266,7 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
         centroid_spread = self._compute_centroid_spread()
         max_pairwise_distance = pairwise_distances.amax(dim=(1, 2))
         enter_target_region_bonus = self.cluster_target_region_reached & ~self.cluster_target_region_bonus_awarded
+        use_swarm_terms = not self.cfg.solo_pretraining
         for agent_idx, agent in enumerate(self.agent_ids):
             progress_delta = torch.clamp(
                 self.agent_guidance_progress[agent] - self.agent_prev_guidance_progress[agent],
@@ -286,29 +289,36 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
             goal_distance = self.agent_goal_distance[agent]
             goal_soft_reward = 1.0 / (1.0 + torch.square(goal_distance / self.cfg.goal_soft_sigma))
             goal_tight_reward = 1.0 / (1.0 + torch.square(goal_distance / self.cfg.goal_tight_sigma))
-            cluster_goal_bonus = 1.0 / (
-                1.0 + torch.square(self.cluster_goal_distance / max(self.cfg.cluster_goal_bonus_sigma, 1e-6))
-            )
-
-            close_penalty = torch.clamp(
-                (self.cfg.min_separation - nearest_distances[:, agent_idx]) / self.cfg.min_separation,
-                min=0.0,
-                max=1.0,
-            )
-            far_penalty = torch.clamp(
-                (centroid_spread[:, agent_idx] - self.cfg.max_cohesion_radius) / self.cfg.max_cohesion_radius,
-                min=0.0,
-                max=1.0,
-            )
-            pairwise_far_penalty = torch.clamp(
-                (max_pairwise_distance - self.cfg.max_pairwise_separation) / self.cfg.max_pairwise_separation,
-                min=0.0,
-                max=1.0,
-            )
+            if use_swarm_terms:
+                cluster_goal_bonus = 1.0 / (
+                    1.0 + torch.square(self.cluster_goal_distance / max(self.cfg.cluster_goal_bonus_sigma, 1e-6))
+                )
+                close_penalty = torch.clamp(
+                    (self.cfg.min_separation - nearest_distances[:, agent_idx]) / self.cfg.min_separation,
+                    min=0.0,
+                    max=1.0,
+                )
+                far_penalty = torch.clamp(
+                    (centroid_spread[:, agent_idx] - self.cfg.max_cohesion_radius) / self.cfg.max_cohesion_radius,
+                    min=0.0,
+                    max=1.0,
+                )
+                pairwise_far_penalty = torch.clamp(
+                    (max_pairwise_distance - self.cfg.max_pairwise_separation) / self.cfg.max_pairwise_separation,
+                    min=0.0,
+                    max=1.0,
+                )
+            else:
+                cluster_goal_bonus = torch.zeros_like(goal_distance)
+                close_penalty = torch.zeros_like(goal_distance)
+                far_penalty = torch.zeros_like(goal_distance)
+                pairwise_far_penalty = torch.zeros_like(goal_distance)
             speed_xy = torch.linalg.norm(self.robots[agent].data.root_lin_vel_w[:, :2], dim=1)
             overspeed_penalty = torch.clamp((speed_xy - self.cfg.max_speed) / self.cfg.max_speed, min=0.0)
             action_rate_penalty = torch.sum(torch.abs(self.actions[agent] - self._previous_actions[agent]), dim=1)
-            termination_penalty = (self.cluster_collision.float() + self.cluster_contact.float()).clamp(max=1.0)
+            termination_penalty = self.cluster_contact.float()
+            if use_swarm_terms:
+                termination_penalty = (self.cluster_collision.float() + self.cluster_contact.float()).clamp(max=1.0)
 
             rewards[agent] = (
                 self.cfg.reward_progress_weight * progress_reward
@@ -317,12 +327,12 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
                 + self.cfg.reward_goal_soft_weight * goal_soft_reward
                 + self.cfg.reward_goal_tight_weight * goal_tight_reward
                 + self.cfg.reward_cluster_goal_bonus_weight * cluster_goal_bonus
-                + self.cfg.reward_enter_target_region_weight * enter_target_region_bonus.float()
-                + self.cfg.reward_success_weight * self.cluster_success.float()
+                + self.cfg.reward_enter_target_region_weight * (enter_target_region_bonus.float() if use_swarm_terms else torch.zeros_like(goal_distance))
+                + self.cfg.reward_success_weight * (self.cluster_success.float() if use_swarm_terms else torch.zeros_like(goal_distance))
                 - self.cfg.reward_close_weight * close_penalty
                 - self.cfg.reward_far_weight * far_penalty
                 - self.cfg.reward_pairwise_far_weight * pairwise_far_penalty
-                - self.cfg.reward_collision_weight * self.cluster_collision.float()
+                - self.cfg.reward_collision_weight * (self.cluster_collision.float() if use_swarm_terms else torch.zeros_like(goal_distance))
                 - self.cfg.reward_contact_weight * self.agent_contact_penalty_active[agent].float()
                 - self.cfg.reward_termination_weight * termination_penalty
                 - self.cfg.reward_overspeed_weight * overspeed_penalty
@@ -334,7 +344,9 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         self._update_common_buffers()
         time_out = self.episode_length_buf >= self.max_episode_length
-        terminated_common = self.cluster_success | self.cluster_collision | self.cluster_contact
+        terminated_common = self.cluster_success | self.cluster_contact
+        if not self.cfg.solo_pretraining:
+            terminated_common = terminated_common | self.cluster_collision
         terminal_mask = terminated_common | time_out
         self._pending_log = self._build_terminal_log(terminal_mask, time_out)
         terminated = {agent: terminated_common.clone() for agent in self.agent_ids}
@@ -419,7 +431,10 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
         pairwise_distances = self._compute_pairwise_distances_xy()
         centroid_spread = self._compute_centroid_spread()
         collision_matrix = (pairwise_distances > 0.0) & (pairwise_distances < self.cfg.collision_distance)
-        self.cluster_collision = collision_matrix.any(dim=(1, 2))
+        if self.cfg.solo_pretraining:
+            self.cluster_collision = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+        else:
+            self.cluster_collision = collision_matrix.any(dim=(1, 2))
         self.cluster_contact = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
         self.cluster_fall = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
         self.cluster_max_centroid_radius = centroid_spread.amax(dim=1)
@@ -453,9 +468,12 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
         success_goal = (self.cluster_goal_distance < self.cfg.cluster_success_radius) & (
             torch.max(stacked_goal_distances, dim=1).values < self.cfg.agent_goal_radius
         )
-        success_compact = (self.cluster_max_centroid_radius < self.cfg.success_max_centroid_radius) & (
-            self.cluster_max_pairwise_distance < self.cfg.success_max_pairwise_distance
-        )
+        if self.cfg.solo_pretraining:
+            success_compact = torch.ones_like(success_goal, dtype=torch.bool)
+        else:
+            success_compact = (self.cluster_max_centroid_radius < self.cfg.success_max_centroid_radius) & (
+                self.cluster_max_pairwise_distance < self.cfg.success_max_pairwise_distance
+            )
         self.cluster_success = success_goal & success_compact
 
         mean_progress_delta = torch.stack(

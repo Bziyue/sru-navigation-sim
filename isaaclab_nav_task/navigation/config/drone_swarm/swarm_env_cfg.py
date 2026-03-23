@@ -171,6 +171,8 @@ class DroneSwarmNavigationEnvCfg(DirectMARLEnvCfg):
     action_scale: tuple[float, float, float] = (2.5, 2.5, 1.5)
     max_speed: float = 2.5
     teammate_observation_radius: float = 6.0
+    disable_teammate_observations: bool = False
+    solo_pretraining: bool = False
 
     initial_formation_offsets_xy: tuple[tuple[float, float], ...] = (
         (0.0, 0.0),
@@ -260,6 +262,21 @@ class DroneSwarmNavigationEnvCfg(DirectMARLEnvCfg):
 
 @configclass
 class DroneSwarmNavigationEnvCfg_DEV(DroneSwarmNavigationEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+
+
+@configclass
+class DroneSwarmNavigationEnvCfg_SOLO(DroneSwarmNavigationEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.disable_teammate_observations = True
+        self.solo_pretraining = True
+
+
+@configclass
+class DroneSwarmNavigationEnvCfg_SOLO_DEV(DroneSwarmNavigationEnvCfg_SOLO):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 32

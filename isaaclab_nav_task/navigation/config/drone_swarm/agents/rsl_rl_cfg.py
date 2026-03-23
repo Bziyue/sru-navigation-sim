@@ -52,8 +52,21 @@ class DroneSwarmNavIPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 @configclass
+class DroneSwarmNavIPPOSoloRunnerCfg(DroneSwarmNavIPPORunnerCfg):
+    experiment_name = "drone_swarm_navigation_ippo_solo"
+
+
+@configclass
 class DroneSwarmNavIPPORunnerDevCfg(DroneSwarmNavIPPORunnerCfg):
     def __post_init__(self):
         super().__post_init__()
         self.max_iterations = 300
         self.experiment_name = "drone_swarm_navigation_ippo_dev"
+
+
+@configclass
+class DroneSwarmNavIPPOSoloRunnerDevCfg(DroneSwarmNavIPPOSoloRunnerCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.max_iterations = 300
+        self.experiment_name = "drone_swarm_navigation_ippo_solo_dev"
