@@ -107,6 +107,7 @@ class DroneCommandsCfg:
         guidance_trajectories_data_path=os.path.join(STATIC_SCAN_DIR, "all_region_pair_trajectories.json"),
         precomputed_safe_points_path=DEFAULT_PRECOMPUTED_SAFE_POINTS_PATH,
         flight_height=1.2,
+        sample_height_from_safe_points=False,
         point_clearance=0.15,
         safe_point_grid_spacing=0.25,
         region_points_per_region=192,
@@ -123,11 +124,14 @@ class DroneCommandsCfg:
 class DroneActionsCfg:
     accel_command = mdp.DroneAccelActionCfg(
         asset_name="robot",
-        scale=[2.5, 2.5, 1.5],
-        offset=[0.0, 0.0, 0.0],
+        scale=[2.5, 2.5, 1.5, 0.15],
+        offset=[0.0, 0.0, 0.0, 0.0],
         use_raw_actions=True,
         policy_distr_type="gaussian",
+        enable_height_command=False,
         target_height=1.2,
+        min_height=0.5,
+        max_height=2.0,
         body_name="body",
         max_speed=2.5,
         use_controller=False,
@@ -242,6 +246,18 @@ class DroneEventCfg:
 @configclass
 class DroneRewardsCfg:
     action_rate_l1 = RewTerm(func=mdp.action_rate_l1, weight=-0.05)
+    height_command_l1 = RewTerm(func=mdp.height_command_l1, weight=-0.2)
+    height_band_penalty = RewTerm(
+        func=mdp.height_band_penalty,
+        weight=-0.4,
+        params={
+            "cruise_height": 1.2,
+            "deadband": 0.15,
+            "max_error": 0.8,
+            "activate_after_start_distance": 2.0,
+            "release_goal_distance": 5.0,
+        },
+    )
     guidance_progress = RewTerm(
         func=mdp.guidance_progress_reward,
         weight=0.7,
@@ -316,6 +332,10 @@ class DroneStaticNavigationEnvCfg(ManagerBasedRLEnvCfg):
             self.scene.raycast_camera.update_period = self.decimation * self.sim.dt
         if self.scene.contact_forces is not None:
             self.scene.contact_forces.update_period = self.sim.dt
+
+        # Keep planar pretraining on the fixed 1.2 m slice, and switch command
+        # sampling to true 3D safe-point sampling only when height control is enabled.
+        self.commands.robot_goal.sample_height_from_safe_points = self.actions.accel_command.enable_height_command
 
 
 @configclass

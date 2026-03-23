@@ -188,6 +188,7 @@ def _load_precomputed_region_point_sets(
     surface_bbox_data_path: str,
     precomputed_safe_points_path: str,
     flight_height: float,
+    sample_height_from_safe_points: bool = False,
 ) -> tuple[list[dict], np.ndarray]:
     base_regions = _load_region_boxes(surface_bbox_data_path)
     payload = np.load(precomputed_safe_points_path)
@@ -207,7 +208,9 @@ def _load_precomputed_region_point_sets(
         )
 
     available_z_values = np.unique(np.round(points_xyz[:, 2], decimals=4))
-    if not np.any(np.isclose(available_z_values, float(flight_height), atol=1e-4)):
+    if (not sample_height_from_safe_points) and not np.any(
+        np.isclose(available_z_values, float(flight_height), atol=1e-4)
+    ):
         raise RuntimeError(
             "Requested flight height is not present in the precomputed safe point file: "
             f"height={float(flight_height):.3f}, available={available_z_values.tolist()}."
@@ -232,9 +235,14 @@ def _load_precomputed_region_point_sets(
         start = int(region_start_indices[region_id])
         count = int(region_counts[region_id])
         region_points = points_xyz[start : start + count].astype(np.float32, copy=False)
-        safe_points = region_points[np.isclose(region_points[:, 2], float(flight_height), atol=1e-4)]
+        if sample_height_from_safe_points:
+            safe_points = region_points
+            center_height = float(np.mean(region_points[:, 2])) if len(region_points) > 0 else float(flight_height)
+        else:
+            safe_points = region_points[np.isclose(region_points[:, 2], float(flight_height), atol=1e-4)]
+            center_height = float(flight_height)
         region = dict(base_region)
-        region["center"] = np.array([region["center_xy"][0], region["center_xy"][1], float(flight_height)], dtype=np.float32)
+        region["center"] = np.array([region["center_xy"][0], region["center_xy"][1], center_height], dtype=np.float32)
         region["safe_points"] = safe_points.astype(np.float32, copy=False)
         loaded_regions.append(region)
         if len(safe_points) > 0:
@@ -257,6 +265,7 @@ def _build_region_point_sets(
     point_clearance: float,
     grid_spacing: float,
     precomputed_safe_points_path: str | None = None,
+    sample_height_from_safe_points: bool = False,
 ) -> tuple[list[dict], np.ndarray]:
     cache_key = (
         surface_bbox_data_path,
@@ -265,6 +274,7 @@ def _build_region_point_sets(
         float(point_clearance),
         float(grid_spacing),
         precomputed_safe_points_path,
+        bool(sample_height_from_safe_points),
     )
     if cache_key in _REGION_POINT_SET_CACHE:
         return _REGION_POINT_SET_CACHE[cache_key]
@@ -274,6 +284,7 @@ def _build_region_point_sets(
             surface_bbox_data_path=surface_bbox_data_path,
             precomputed_safe_points_path=precomputed_safe_points_path,
             flight_height=flight_height,
+            sample_height_from_safe_points=sample_height_from_safe_points,
         )
         _REGION_POINT_SET_CACHE[cache_key] = (region_point_sets, safe_points)
         return region_point_sets, safe_points
@@ -475,6 +486,7 @@ class StaticRegionGoalCommand(CommandTerm):
             point_clearance=float(cfg.point_clearance),
             grid_spacing=float(cfg.safe_point_grid_spacing),
             precomputed_safe_points_path=cfg.precomputed_safe_points_path,
+            sample_height_from_safe_points=bool(cfg.sample_height_from_safe_points),
         )
         self.region_names = [region["name"] for region in region_point_sets]
         self.region_xy_min = torch.as_tensor(
@@ -566,6 +578,11 @@ class StaticRegionGoalCommand(CommandTerm):
         self.metrics["success_rate"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["active_guidance_assignments"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["active_guidance_unique"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["Height/current"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["Height/goal"] = torch.full((self.num_envs,), self.flight_height, device=self.device)
+        self.metrics["Height/desired"] = torch.full((self.num_envs,), self.flight_height, device=self.device)
+        self.metrics["Height/error_abs"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["Height/command_delta"] = torch.zeros(self.num_envs, device=self.device)
 
     def _build_region_safe_points_vis(
         self,
@@ -774,6 +791,7 @@ class StaticRegionGoalCommand(CommandTerm):
         position_error = self.goal_position_world - self.robot.data.root_pos_w[:, :3]
         position_error_2d = position_error[:, :2]
         velocity_2d = self.robot.data.root_state_w[:, 7:9]
+        current_height = self.robot.data.root_pos_w[:, 2]
 
         self.metrics["velocity_magnitude"] = torch.norm(velocity_2d, dim=1)
         direction_to_goal = position_error_2d / torch.clamp(torch.norm(position_error_2d, dim=1, keepdim=True), min=1e-6)
@@ -783,6 +801,21 @@ class StaticRegionGoalCommand(CommandTerm):
         active_unique = float(torch.unique(self.current_guidance_ids).numel())
         self.metrics["active_guidance_assignments"].fill_(active_assignments)
         self.metrics["active_guidance_unique"].fill_(active_unique)
+        self.metrics["Height/current"].copy_(current_height)
+        self.metrics["Height/goal"].copy_(self.goal_position_world[:, 2])
+        self.metrics["Height/error_abs"].copy_(torch.abs(current_height - self.goal_position_world[:, 2]))
+
+        action_term = self.env.action_manager.get_term("accel_command")
+        if action_term.processed_actions.shape[1] > 3:
+            self.metrics["Height/command_delta"].copy_(action_term.processed_actions[:, 3])
+        else:
+            self.metrics["Height/command_delta"].zero_()
+
+        desired_height = getattr(action_term, "_desired_height", None)
+        if desired_height is not None:
+            self.metrics["Height/desired"].copy_(desired_height[:, 0])
+        else:
+            self.metrics["Height/desired"].fill_(self.flight_height)
 
     def _resample_command(self, env_ids: Sequence[int]):
         if isinstance(env_ids, torch.Tensor):

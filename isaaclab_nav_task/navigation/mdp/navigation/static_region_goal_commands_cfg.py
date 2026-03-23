@@ -24,6 +24,7 @@ class StaticRegionGoalCommandCfg(CommandTermCfg):
     guidance_trajectory_eval_dt: float = 0.05
     guidance_arc_length_spacing: float = 0.2
     flight_height: float = 1.2
+    sample_height_from_safe_points: bool = False
     point_clearance: float = 0.15
     safe_point_grid_spacing: float = 0.25
     region_points_per_region: int = 192

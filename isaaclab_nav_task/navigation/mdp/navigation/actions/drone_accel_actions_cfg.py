@@ -15,11 +15,14 @@ class DroneAccelActionCfg(ActionTermCfg):
     class_type: type[ActionTerm] = DroneAccelAction
 
     asset_name: str = MISSING
-    scale: list[float] = [2.0, 2.0, 1.5]
-    offset: list[float] = [0.0, 0.0, 0.0]
+    scale: list[float] = [2.0, 2.0, 1.5, 0.15]
+    offset: list[float] = [0.0, 0.0, 0.0, 0.0]
     use_raw_actions: bool = False
     policy_distr_type: str = "gaussian"
+    enable_height_command: bool = False
     target_height: float = 1.2
+    min_height: float = 0.5
+    max_height: float = 2.0
     body_name: str = "body"
     max_speed: float = 2.5
     use_controller: bool = False

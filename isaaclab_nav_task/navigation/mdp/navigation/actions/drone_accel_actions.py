@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 
 class DroneAccelAction(ActionTerm):
-    """Map current-body-frame `[ax, ay, yaw_rate]` commands into planar drone control."""
+    """Map current-body-frame `[ax, ay, yaw_rate, delta_height]` commands into drone control."""
 
     cfg: DroneAccelActionCfg
     _env: ManagerBasedEnv
@@ -26,7 +26,7 @@ class DroneAccelAction(ActionTerm):
     def __init__(self, cfg: DroneAccelActionCfg, env: ManagerBasedEnv):
         super().__init__(cfg, env)
 
-        self._action_dim = 3
+        self._action_dim = 4
         self._raw_actions = torch.zeros((self.num_envs, self._action_dim), device=self.device)
         self._processed_actions = torch.zeros_like(self._raw_actions)
         self._root_twist_command = torch.zeros((self.num_envs, 6), device=self.device)
@@ -37,6 +37,7 @@ class DroneAccelAction(ActionTerm):
         self._desired_acceleration_w = torch.zeros_like(self._desired_velocity_w)
         self._desired_position_w = torch.zeros_like(self._desired_velocity_w)
         self._desired_jerk_w = torch.zeros_like(self._desired_velocity_w)
+        self._desired_height = torch.full((self.num_envs, 1), float(self.cfg.target_height), device=self.device)
         self._desired_yaw = torch.zeros((self.num_envs, 1), device=self.device)
         self._desired_yaw_rate = torch.zeros((self.num_envs, 1), device=self.device)
         self._yaw_initialized = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
@@ -89,6 +90,14 @@ class DroneAccelAction(ActionTerm):
         self._desired_velocity_w.zero_()
         self._desired_velocity_w[:, :2] = self._asset.data.root_lin_vel_w[:, :2]
         self._clip_planar_speed_(self._desired_velocity_w)
+        if self.cfg.enable_height_command:
+            self._desired_height[:] = torch.clamp(
+                self._asset.data.root_pos_w[:, 2:3] + self._processed_actions[:, 3:4],
+                min=float(self.cfg.min_height),
+                max=float(self.cfg.max_height),
+            )
+        else:
+            self._desired_height.fill_(float(self.cfg.target_height))
 
     def _clip_planar_speed_(self, planar_velocity_w: torch.Tensor) -> None:
         speed_xy = torch.linalg.norm(planar_velocity_w[:, :2], dim=1, keepdim=True)
@@ -133,7 +142,7 @@ class DroneAccelAction(ActionTerm):
         yaw_only_quat = yaw_quat(self._asset.data.root_quat_w)
 
         pose = torch.cat((root_pos, yaw_only_quat), dim=-1)
-        pose[:, 2] = self.cfg.target_height
+        pose[:, 2] = self._desired_height[:, 0]
         self._asset.write_root_pose_to_sim(pose)
 
         self._root_twist_command[:, 0:2] = self._desired_velocity_w[:, 0:2]
@@ -146,7 +155,7 @@ class DroneAccelAction(ActionTerm):
         root_pos = self._asset.data.root_pos_w
 
         self._desired_position_w[:] = root_pos
-        self._desired_position_w[:, 2] = self.cfg.target_height
+        self._desired_position_w[:, 2] = self._desired_height[:, 0]
 
         if self._controller_counter % self.cfg.controller_decimation == 0:
             desired_state = torch.cat(
@@ -185,6 +194,7 @@ class DroneAccelAction(ActionTerm):
             self._desired_acceleration_w.zero_()
             self._desired_position_w.zero_()
             self._desired_jerk_w.zero_()
+            self._desired_height.fill_(float(self.cfg.target_height))
             self._desired_yaw.zero_()
             self._desired_yaw_rate.zero_()
             self._yaw_initialized.zero_()
@@ -202,6 +212,7 @@ class DroneAccelAction(ActionTerm):
         self._desired_acceleration_w[env_ids] = 0.0
         self._desired_position_w[env_ids] = 0.0
         self._desired_jerk_w[env_ids] = 0.0
+        self._desired_height[env_ids] = float(self.cfg.target_height)
         self._desired_yaw[env_ids] = 0.0
         self._desired_yaw_rate[env_ids] = 0.0
         self._yaw_initialized[env_ids] = False
