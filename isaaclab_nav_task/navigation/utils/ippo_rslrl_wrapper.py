@@ -99,21 +99,23 @@ class RslRlParameterSharingVecEnvWrapper(VecEnv):
             return {}
         if all(agent in extras for agent in self.agent_ids):
             merged = {}
+            log_payload = {}
             log_candidates = [
                 extras[agent].get("log")
                 for agent in self.agent_ids
                 if isinstance(extras[agent], dict) and extras[agent].get("log") is not None
             ]
+            metric_candidates = [
+                extras[agent].get("metrics")
+                for agent in self.agent_ids
+                if isinstance(extras[agent], dict) and extras[agent].get("metrics") is not None
+            ]
+            if metric_candidates:
+                log_payload.update(metric_candidates[0])
             if log_candidates:
-                merged["log"] = log_candidates[0]
-            else:
-                metric_candidates = [
-                    extras[agent].get("metrics")
-                    for agent in self.agent_ids
-                    if isinstance(extras[agent], dict) and extras[agent].get("metrics") is not None
-                ]
-                if metric_candidates:
-                    merged["log"] = metric_candidates[0]
+                log_payload.update(log_candidates[0])
+            if log_payload:
+                merged["log"] = log_payload
             if "critic" in extras[self.agent_ids[0]]:
                 merged["observations"] = {
                     "critic": torch.cat([extras[agent]["critic"] for agent in self.agent_ids], dim=0)
