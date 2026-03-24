@@ -217,13 +217,54 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
         if self.cfg.disable_teammate_observations:
             return 0.0
 
-        scale_min = float(self.cfg.teammate_obs_scale_min)
-        scale_max = float(self.cfg.teammate_obs_scale_max)
+        return self._compute_curriculum_scale(
+            scale_min=float(self.cfg.teammate_obs_scale_min),
+            scale_max=float(self.cfg.teammate_obs_scale_max),
+            warmup_iters=int(self.cfg.teammate_obs_scale_warmup_iters),
+            ramp_iters=int(self.cfg.teammate_obs_scale_ramp_iters),
+        )
+
+    def _get_swarm_penalty_scale(self) -> float:
+        if self.cfg.solo_pretraining:
+            return 0.0
+
+        return self._compute_curriculum_scale(
+            scale_min=float(self.cfg.swarm_penalty_scale_min),
+            scale_max=float(self.cfg.swarm_penalty_scale_max),
+            warmup_iters=int(self.cfg.swarm_penalty_scale_warmup_iters),
+            ramp_iters=int(self.cfg.swarm_penalty_scale_ramp_iters),
+        )
+
+    def _is_cluster_collision_termination_enabled(self) -> bool:
+        if not self.cfg.enable_cluster_collision_termination or self.cfg.solo_pretraining:
+            return False
+
+        mode = str(getattr(self.cfg, "cluster_collision_termination_mode", "curriculum")).strip().lower()
+        if mode == "always_off":
+            return False
+        if mode == "always_on":
+            return True
+        if mode != "curriculum":
+            raise ValueError(
+                "cluster_collision_termination_mode must be one of "
+                "{'always_off', 'curriculum', 'always_on'}"
+            )
+
+        warmup_iters = max(int(self.cfg.cluster_collision_termination_warmup_iters), 0)
+        anchor_iter = self.teammate_obs_curriculum_anchor_iter
+        if anchor_iter is None:
+            anchor_iter = self.current_training_iteration
+        curriculum_iter = max(self.current_training_iteration - anchor_iter, 0)
+        return curriculum_iter >= warmup_iters
+
+    def _compute_curriculum_scale(
+        self, scale_min: float, scale_max: float, warmup_iters: int, ramp_iters: int
+    ) -> float:
         if scale_max <= scale_min:
             return scale_max
 
-        warmup_iters = max(int(self.cfg.teammate_obs_scale_warmup_iters), 0)
-        ramp_iters = max(int(self.cfg.teammate_obs_scale_ramp_iters), 1)
+        warmup_iters = max(int(warmup_iters), 0)
+        ramp_iters = max(int(ramp_iters), 1)
         anchor_iter = self.teammate_obs_curriculum_anchor_iter
         if anchor_iter is None:
             anchor_iter = self.current_training_iteration
@@ -329,6 +370,8 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
         max_pairwise_distance = pairwise_distances.amax(dim=(1, 2))
         enter_target_region_bonus = self.cluster_target_region_reached & ~self.cluster_target_region_bonus_awarded
         use_swarm_terms = not self.cfg.solo_pretraining
+        swarm_penalty_scale = self._get_swarm_penalty_scale()
+        collision_termination_enabled = self._is_cluster_collision_termination_enabled()
         for agent_idx, agent in enumerate(self.agent_ids):
             progress_delta = torch.clamp(
                 self.agent_guidance_progress[agent] - self.agent_prev_guidance_progress[agent],
@@ -370,17 +413,29 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
                     min=0.0,
                     max=1.0,
                 )
+                # Before hard collision termination is enabled, keep collision shaping continuous so
+                # the policy can learn avoidance without being dominated by a binary penalty.
+                collision_penalty = torch.clamp(
+                    (self.cfg.collision_distance - nearest_distances[:, agent_idx]) / self.cfg.collision_distance,
+                    min=0.0,
+                    max=1.0,
+                )
             else:
                 cluster_goal_bonus = torch.zeros_like(goal_distance)
                 close_penalty = torch.zeros_like(goal_distance)
                 far_penalty = torch.zeros_like(goal_distance)
                 pairwise_far_penalty = torch.zeros_like(goal_distance)
+                collision_penalty = torch.zeros_like(goal_distance)
             speed_xy = torch.linalg.norm(self.robots[agent].data.root_lin_vel_w[:, :2], dim=1)
             overspeed_penalty = torch.clamp((speed_xy - self.cfg.max_speed) / self.cfg.max_speed, min=0.0)
             action_rate_penalty = torch.sum(torch.abs(self.actions[agent] - self._previous_actions[agent]), dim=1)
             termination_penalty = self.cluster_contact.float()
-            if use_swarm_terms:
+            if use_swarm_terms and collision_termination_enabled:
                 termination_penalty = (self.cluster_collision.float() + self.cluster_contact.float()).clamp(max=1.0)
+
+            collision_event_penalty = collision_penalty
+            if use_swarm_terms and collision_termination_enabled:
+                collision_event_penalty = self.cluster_collision.float()
 
             rewards[agent] = (
                 self.cfg.reward_progress_weight * progress_reward
@@ -391,12 +446,12 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
                 + self.cfg.reward_cluster_goal_bonus_weight * cluster_goal_bonus
                 + self.cfg.reward_enter_target_region_weight * (enter_target_region_bonus.float() if use_swarm_terms else torch.zeros_like(goal_distance))
                 + self.cfg.reward_success_weight * (self.cluster_success.float() if use_swarm_terms else torch.zeros_like(goal_distance))
-                - self.cfg.reward_close_weight * close_penalty
-                - self.cfg.reward_far_weight * far_penalty
-                - self.cfg.reward_pairwise_far_weight * pairwise_far_penalty
-                - self.cfg.reward_collision_weight * (self.cluster_collision.float() if use_swarm_terms else torch.zeros_like(goal_distance))
+                - swarm_penalty_scale * self.cfg.reward_close_weight * close_penalty
+                - swarm_penalty_scale * self.cfg.reward_far_weight * far_penalty
+                - swarm_penalty_scale * self.cfg.reward_pairwise_far_weight * pairwise_far_penalty
+                - swarm_penalty_scale * self.cfg.reward_collision_weight * collision_event_penalty
                 - self.cfg.reward_contact_weight * self.agent_contact_penalty_active[agent].float()
-                - self.cfg.reward_termination_weight * termination_penalty
+                - swarm_penalty_scale * self.cfg.reward_termination_weight * termination_penalty
                 - self.cfg.reward_overspeed_weight * overspeed_penalty
                 - self.cfg.reward_action_rate_weight * action_rate_penalty
             )
@@ -407,7 +462,7 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
         self._update_common_buffers()
         time_out = self.episode_length_buf >= self.max_episode_length
         terminated_common = self.cluster_success | self.cluster_contact
-        if not self.cfg.solo_pretraining:
+        if self._is_cluster_collision_termination_enabled():
             terminated_common = terminated_common | self.cluster_collision
         terminal_mask = terminated_common | time_out
         self._pending_log = self._build_terminal_log(terminal_mask, time_out)
@@ -561,14 +616,24 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
                 "guidance_progress_delta": mean_progress_delta,
                 "guidance_lateral_error": mean_lateral_error,
                 "teammate_obs_scale": torch.tensor(self._get_teammate_obs_scale(), device=self.device),
+                "swarm_penalty_scale": torch.tensor(self._get_swarm_penalty_scale(), device=self.device),
+                "cluster_collision_termination_enabled": torch.tensor(
+                    float(self._is_cluster_collision_termination_enabled()), device=self.device
+                ),
             }
 
     def _build_terminal_log(self, terminal_mask: torch.Tensor, time_out: torch.Tensor) -> dict[str, torch.Tensor] | None:
         if not torch.any(terminal_mask):
             return None
 
+        collision_termination_enabled = self._is_cluster_collision_termination_enabled()
+
         terminal_success = self.cluster_success & terminal_mask
-        terminal_collision = self.cluster_collision & terminal_mask
+        terminal_collision_present = self.cluster_collision & terminal_mask
+        if collision_termination_enabled:
+            terminal_collision_caused = self.cluster_collision & terminal_mask
+        else:
+            terminal_collision_caused = torch.zeros_like(self.cluster_collision, dtype=torch.bool)
         terminal_contact = self.cluster_contact & terminal_mask
         terminal_timeout = time_out & terminal_mask
         terminal_target_region = self.cluster_target_region_reached & terminal_mask
@@ -590,7 +655,10 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
         return {
             "terminal_count": terminal_count.float(),
             "terminal_success_rate": terminal_success.float().sum() / terminal_count.float(),
-            "terminal_collision_rate": terminal_collision.float().sum() / terminal_count.float(),
+            "terminal_collision_present_rate": terminal_collision_present.float().sum() / terminal_count.float(),
+            "terminal_collision_caused_rate": terminal_collision_caused.float().sum() / terminal_count.float(),
+            # Backward-compatible alias: this now means collision-caused terminations.
+            "terminal_collision_rate": terminal_collision_caused.float().sum() / terminal_count.float(),
             "terminal_contact_rate": terminal_contact.float().sum() / terminal_count.float(),
             "terminal_target_region_rate": terminal_target_region.float().sum() / terminal_count.float(),
             "terminal_timeout_rate": terminal_timeout.float().sum() / terminal_count.float(),

@@ -175,8 +175,15 @@ class DroneSwarmNavigationEnvCfg(DirectMARLEnvCfg):
     solo_pretraining: bool = False
     teammate_obs_scale_min: float = 0.05
     teammate_obs_scale_max: float = 1.0
-    teammate_obs_scale_warmup_iters: int = 50
-    teammate_obs_scale_ramp_iters: int = 800
+    teammate_obs_scale_warmup_iters: int = 100
+    teammate_obs_scale_ramp_iters: int = 1000
+    swarm_penalty_scale_min: float = 0.25
+    swarm_penalty_scale_max: float = 1.0
+    swarm_penalty_scale_warmup_iters: int = 150
+    swarm_penalty_scale_ramp_iters: int = 1200
+    enable_cluster_collision_termination: bool = True
+    cluster_collision_termination_mode: str = "curriculum"
+    cluster_collision_termination_warmup_iters: int = 1200
 
     initial_formation_offsets_xy: tuple[tuple[float, float], ...] = (
         (0.0, 0.0),
@@ -271,6 +278,9 @@ class DroneSwarmNavigationEnvCfg_DEV(DroneSwarmNavigationEnvCfg):
         self.scene.num_envs = 32
         self.teammate_obs_scale_warmup_iters = 10
         self.teammate_obs_scale_ramp_iters = 80
+        self.swarm_penalty_scale_warmup_iters = 10
+        self.swarm_penalty_scale_ramp_iters = 80
+        self.cluster_collision_termination_warmup_iters = 20
 
 
 @configclass
