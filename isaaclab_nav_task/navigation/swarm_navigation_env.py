@@ -111,6 +111,9 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
         self.cluster_max_pairwise_distance = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
         self.cluster_target_region_reached = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
         self.cluster_target_region_bonus_awarded = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+        self.cluster_guidance_progress = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
+        self.cluster_prev_guidance_progress = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
+        self.cluster_guidance_lateral_error = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
 
         self.agent_guidance_progress = {
             agent: torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device) for agent in self.agent_ids
@@ -130,6 +133,10 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
         self.agent_contact_termination_streak = {
             agent: torch.zeros((self.num_envs,), dtype=torch.long, device=self.device) for agent in self.agent_ids
         }
+        self._guidance_progress_metric_step = -1
+        self._cached_mean_guidance_progress_delta = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        self._cached_cluster_guidance_progress_delta = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        self._cached_cluster_guidance_compactness_gate = torch.tensor(0.0, dtype=torch.float32, device=self.device)
         self._pending_log: dict[str, torch.Tensor] | None = None
 
     def _setup_scene(self):
@@ -372,6 +379,37 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
         use_swarm_terms = not self.cfg.solo_pretraining
         swarm_penalty_scale = self._get_swarm_penalty_scale()
         collision_termination_enabled = self._is_cluster_collision_termination_enabled()
+        cluster_progress_delta = torch.clamp(
+            self.cluster_guidance_progress - self.cluster_prev_guidance_progress,
+            min=0.0,
+            max=self.cfg.guidance_progress_clamp,
+        )
+        cluster_progress_reward = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
+        if use_swarm_terms:
+            pairwise_gate_denom = max(
+                float(self.cfg.max_pairwise_separation - self.cfg.success_max_pairwise_distance),
+                1e-6,
+            )
+            centroid_gate_denom = max(
+                float(self.cfg.max_cohesion_radius - self.cfg.success_max_centroid_radius),
+                1e-6,
+            )
+            pairwise_compactness_gate = torch.clamp(
+                (self.cfg.max_pairwise_separation - max_pairwise_distance) / pairwise_gate_denom,
+                min=0.0,
+                max=1.0,
+            )
+            centroid_compactness_gate = torch.clamp(
+                (self.cfg.max_cohesion_radius - self.cluster_max_centroid_radius) / centroid_gate_denom,
+                min=0.0,
+                max=1.0,
+            )
+            cluster_compactness_gate = pairwise_compactness_gate * centroid_compactness_gate
+            cluster_progress_reward = (
+                cluster_progress_delta / max(self.cfg.guidance_progress_clamp, 1e-6)
+            ) * cluster_compactness_gate
+        else:
+            cluster_compactness_gate = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
         for agent_idx, agent in enumerate(self.agent_ids):
             progress_delta = torch.clamp(
                 self.agent_guidance_progress[agent] - self.agent_prev_guidance_progress[agent],
@@ -443,6 +481,7 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
                 - self.cfg.reward_lateral_weight * lateral_penalty
                 + self.cfg.reward_goal_soft_weight * goal_soft_reward
                 + self.cfg.reward_goal_tight_weight * goal_tight_reward
+                + self.cfg.reward_cluster_progress_weight * cluster_progress_reward
                 + self.cfg.reward_cluster_goal_bonus_weight * cluster_goal_bonus
                 + self.cfg.reward_enter_target_region_weight * (enter_target_region_bonus.float() if use_swarm_terms else torch.zeros_like(goal_distance))
                 + self.cfg.reward_success_weight * (self.cluster_success.float() if use_swarm_terms else torch.zeros_like(goal_distance))
@@ -508,6 +547,12 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
         self.cluster_goal_distance[env_ids] = torch.linalg.norm(
             self.cluster_goal_center[env_ids, :2] - self.cluster_centroid[env_ids, :2], dim=1
         )
+        initial_cluster_progress, initial_cluster_lateral_error = self._project_guidance_state(
+            self.cluster_centroid[env_ids, :2], guidance_ids
+        )
+        self.cluster_guidance_progress[env_ids] = initial_cluster_progress
+        self.cluster_prev_guidance_progress[env_ids] = initial_cluster_progress
+        self.cluster_guidance_lateral_error[env_ids] = initial_cluster_lateral_error
         self.cluster_max_centroid_radius[env_ids] = 0.0
         self.cluster_max_pairwise_distance[env_ids] = 0.0
         self.cluster_target_region_reached[env_ids] = False
@@ -544,6 +589,12 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
         positions = torch.stack([self.robots[agent].data.root_pos_w for agent in self.agent_ids], dim=1)
         self.cluster_centroid = positions.mean(dim=1)
         self.cluster_goal_distance = torch.linalg.norm(self.cluster_goal_center[:, :2] - self.cluster_centroid[:, :2], dim=1)
+        self.cluster_prev_guidance_progress.copy_(self.cluster_guidance_progress)
+        cluster_progress, cluster_lateral_error = self._project_guidance_state(
+            self.cluster_centroid[:, :2], self.current_guidance_ids
+        )
+        self.cluster_guidance_progress.copy_(cluster_progress)
+        self.cluster_guidance_lateral_error.copy_(cluster_lateral_error)
 
         pairwise_distances = self._compute_pairwise_distances_xy()
         centroid_spread = self._compute_centroid_spread()
@@ -593,10 +644,42 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
             )
         self.cluster_success = success_goal & success_compact
 
-        mean_progress_delta = torch.stack(
-            [self.agent_guidance_progress[a] - self.agent_prev_guidance_progress[a] for a in self.agent_ids],
-            dim=1,
-        ).mean()
+        pairwise_gate_denom = max(
+            float(self.cfg.max_pairwise_separation - self.cfg.success_max_pairwise_distance),
+            1e-6,
+        )
+        centroid_gate_denom = max(
+            float(self.cfg.max_cohesion_radius - self.cfg.success_max_centroid_radius),
+            1e-6,
+        )
+        cluster_compactness_gate = torch.clamp(
+            (self.cfg.max_pairwise_separation - self.cluster_max_pairwise_distance) / pairwise_gate_denom,
+            min=0.0,
+            max=1.0,
+        ) * torch.clamp(
+            (self.cfg.max_cohesion_radius - self.cluster_max_centroid_radius) / centroid_gate_denom,
+            min=0.0,
+            max=1.0,
+        )
+
+        metric_step = int(self.common_step_counter)
+        if self._guidance_progress_metric_step == metric_step:
+            mean_progress_delta = self._cached_mean_guidance_progress_delta
+            cluster_guidance_progress_delta = self._cached_cluster_guidance_progress_delta
+            cached_cluster_compactness_gate = self._cached_cluster_guidance_compactness_gate
+        else:
+            mean_progress_delta = torch.stack(
+                [self.agent_guidance_progress[a] - self.agent_prev_guidance_progress[a] for a in self.agent_ids],
+                dim=1,
+            ).mean()
+            cluster_guidance_progress_delta = torch.mean(
+                self.cluster_guidance_progress - self.cluster_prev_guidance_progress
+            )
+            self._cached_mean_guidance_progress_delta = mean_progress_delta.detach()
+            self._cached_cluster_guidance_progress_delta = cluster_guidance_progress_delta.detach()
+            self._cached_cluster_guidance_compactness_gate = cluster_compactness_gate.mean().detach()
+            self._guidance_progress_metric_step = metric_step
+            cached_cluster_compactness_gate = self._cached_cluster_guidance_compactness_gate
         mean_lateral_error = torch.stack(
             [self.agent_guidance_lateral_error[a] for a in self.agent_ids],
             dim=1,
@@ -613,6 +696,9 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
                 "cluster_spread": mean_spread,
                 "cluster_max_centroid_radius": self.cluster_max_centroid_radius.mean(),
                 "cluster_max_pairwise_distance": self.cluster_max_pairwise_distance.mean(),
+                "cluster_guidance_progress_delta": cluster_guidance_progress_delta,
+                "cluster_guidance_compactness_gate": cached_cluster_compactness_gate,
+                "cluster_guidance_lateral_error": self.cluster_guidance_lateral_error.mean(),
                 "guidance_progress_delta": mean_progress_delta,
                 "guidance_lateral_error": mean_lateral_error,
                 "teammate_obs_scale": torch.tensor(self._get_teammate_obs_scale(), device=self.device),

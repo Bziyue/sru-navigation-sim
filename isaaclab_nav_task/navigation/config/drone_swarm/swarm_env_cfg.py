@@ -226,6 +226,7 @@ class DroneSwarmNavigationEnvCfg(DirectMARLEnvCfg):
     reward_lateral_weight: float = 0.25
     reward_goal_soft_weight: float = 0.25
     reward_goal_tight_weight: float = 1.5
+    reward_cluster_progress_weight: float = 0.15
     reward_cluster_goal_bonus_weight: float = 1.25
     reward_enter_target_region_weight: float = 2.0
     reward_success_weight: float = 4.0
