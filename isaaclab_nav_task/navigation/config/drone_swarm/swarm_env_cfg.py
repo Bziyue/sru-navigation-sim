@@ -173,6 +173,12 @@ class DroneSwarmNavigationEnvCfg(DirectMARLEnvCfg):
     teammate_observation_radius: float = 6.0
     disable_teammate_observations: bool = False
     solo_pretraining: bool = False
+    independent_agent_goals: bool = False
+    teammate_velocity_normalization: float = 5.0
+    teammate_distance_penalty_start: float = 0.50
+    teammate_distance_penalty_full: float = 0.32
+    solo_goal_radius: float = 0.50
+    solo_entry_radius: float = 0.75
 
     initial_formation_offsets_xy: tuple[tuple[float, float], ...] = (
         (0.0, 0.0),
@@ -226,6 +232,7 @@ class DroneSwarmNavigationEnvCfg(DirectMARLEnvCfg):
     reward_termination_weight: float = 25.0
     reward_overspeed_weight: float = 0.15
     reward_action_rate_weight: float = 0.05
+    reward_teammate_proximity_weight: float = 2.0
 
     def __post_init__(self):
         self.sim.disable_contact_processing = False
@@ -271,8 +278,8 @@ class DroneSwarmNavigationEnvCfg_DEV(DroneSwarmNavigationEnvCfg):
 class DroneSwarmNavigationEnvCfg_SOLO(DroneSwarmNavigationEnvCfg):
     def __post_init__(self):
         super().__post_init__()
-        self.disable_teammate_observations = True
         self.solo_pretraining = True
+        self.independent_agent_goals = True
 
 
 @configclass

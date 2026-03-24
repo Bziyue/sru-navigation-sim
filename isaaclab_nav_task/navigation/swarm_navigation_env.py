@@ -96,6 +96,9 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
 
         self.cluster_spawn_center = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
         self.cluster_goal_center = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
+        self.agent_goal_positions = torch.zeros(
+            (self.num_envs, self.num_agents_cfg, 3), dtype=torch.float32, device=self.device
+        )
         self.cluster_centroid = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
         self.source_region_ids = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
         self.target_region_ids = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
@@ -179,7 +182,7 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
         observations: dict[str, dict[str, torch.Tensor]] = {}
         for agent_idx, agent in enumerate(self.agent_ids):
             robot = self.robots[agent]
-            goal_delta_w = self.cluster_goal_center - robot.data.root_pos_w
+            goal_delta_w = self.agent_goal_positions[:, agent_idx] - robot.data.root_pos_w
             goal_delta_b = quat_apply_inverse(yaw_quat(robot.data.root_quat_w), goal_delta_w)
             goal_distance = torch.linalg.norm(goal_delta_b[:, :2], dim=1, keepdim=True)
             goal_command = torch.cat(
@@ -205,8 +208,13 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
                 rel_vel_b = quat_apply_inverse(own_yaw_quat, rel_vel_w)[:, :2]
                 rel_dist = torch.linalg.norm(rel_pos_w[:, :2], dim=1, keepdim=True)
                 visible = (rel_dist <= self.cfg.teammate_observation_radius).float()
+                rel_pos_norm = torch.clamp(rel_pos_b / max(self.cfg.teammate_observation_radius, 1e-6), min=-1.0, max=1.0)
+                rel_vel_norm = torch.clamp(
+                    rel_vel_b / max(self.cfg.teammate_velocity_normalization, 1e-6), min=-1.0, max=1.0
+                )
+                rel_dist_norm = torch.clamp(rel_dist / max(self.cfg.teammate_observation_radius, 1e-6), min=0.0, max=1.0)
                 teammate_features.append(
-                    torch.cat((rel_pos_b * visible, rel_vel_b * visible, rel_dist * visible, visible), dim=1)
+                    torch.cat((rel_pos_norm * visible, rel_vel_norm * visible, rel_dist_norm * visible, visible), dim=1)
                 )
                 teammate_sort_keys.append(rel_dist.squeeze(1))
 
@@ -267,6 +275,12 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
         max_pairwise_distance = pairwise_distances.amax(dim=(1, 2))
         enter_target_region_bonus = self.cluster_target_region_reached & ~self.cluster_target_region_bonus_awarded
         use_swarm_terms = not self.cfg.solo_pretraining
+        proximity_penalty = torch.clamp(
+            (self.cfg.teammate_distance_penalty_start - nearest_distances)
+            / max(self.cfg.teammate_distance_penalty_start - self.cfg.teammate_distance_penalty_full, 1e-6),
+            min=0.0,
+            max=1.0,
+        )
         for agent_idx, agent in enumerate(self.agent_ids):
             progress_delta = torch.clamp(
                 self.agent_guidance_progress[agent] - self.agent_prev_guidance_progress[agent],
@@ -333,6 +347,7 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
                 - self.cfg.reward_far_weight * far_penalty
                 - self.cfg.reward_pairwise_far_weight * pairwise_far_penalty
                 - self.cfg.reward_collision_weight * (self.cluster_collision.float() if use_swarm_terms else torch.zeros_like(goal_distance))
+                - self.cfg.reward_teammate_proximity_weight * (proximity_penalty[:, agent_idx] if self.cfg.solo_pretraining else torch.zeros_like(goal_distance))
                 - self.cfg.reward_contact_weight * self.agent_contact_penalty_active[agent].float()
                 - self.cfg.reward_termination_weight * termination_penalty
                 - self.cfg.reward_overspeed_weight * overspeed_penalty
@@ -377,12 +392,14 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
             spawn_centers,
             goal_centers,
             spawn_positions,
+            goal_positions,
         ) = self._sample_spawn_and_goal(env_ids)
         self.source_region_ids[env_ids] = source_region_ids
         self.target_region_ids[env_ids] = target_region_ids
         self.current_guidance_ids[env_ids] = guidance_ids
         self.cluster_spawn_center[env_ids] = spawn_centers
         self.cluster_goal_center[env_ids] = goal_centers
+        self.agent_goal_positions[env_ids] = goal_positions
         self.cluster_centroid[env_ids] = spawn_positions.mean(dim=1)
         self.cluster_success[env_ids] = False
         self.cluster_collision[env_ids] = False
@@ -418,7 +435,7 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
             self.agent_prev_guidance_progress[agent][env_ids] = initial_progress
             self.agent_guidance_lateral_error[agent][env_ids] = initial_lateral_error
             self.agent_goal_distance[agent][env_ids] = torch.linalg.norm(
-                self.cluster_goal_center[env_ids, :2] - spawn_positions[:, agent_idx, :2], dim=1
+                self.agent_goal_positions[env_ids, agent_idx, :2] - spawn_positions[:, agent_idx, :2], dim=1
             )
             self.agent_contact_penalty_active[agent][env_ids] = False
             self.agent_contact_termination_streak[agent][env_ids] = 0
@@ -440,14 +457,14 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
         self.cluster_max_centroid_radius = centroid_spread.amax(dim=1)
         self.cluster_max_pairwise_distance = pairwise_distances.amax(dim=(1, 2))
         agent_goal_distances = []
-        for agent in self.agent_ids:
+        for agent_idx, agent in enumerate(self.agent_ids):
             robot = self.robots[agent]
             self.agent_prev_guidance_progress[agent].copy_(self.agent_guidance_progress[agent])
             progress, lateral_error = self._project_guidance_state(robot.data.root_pos_w[:, :2], self.current_guidance_ids)
             self.agent_guidance_progress[agent].copy_(progress)
             self.agent_guidance_lateral_error[agent].copy_(lateral_error)
             self.agent_goal_distance[agent] = torch.linalg.norm(
-                self.cluster_goal_center[:, :2] - robot.data.root_pos_w[:, :2], dim=1
+                self.agent_goal_positions[:, agent_idx, :2] - robot.data.root_pos_w[:, :2], dim=1
             )
 
             contact_force = self._compute_contact_force(agent)
@@ -462,15 +479,17 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
             agent_goal_distances.append(self.agent_goal_distance[agent])
 
         stacked_goal_distances = torch.stack(agent_goal_distances, dim=1)
-        self.cluster_target_region_reached = (self.cluster_goal_distance < self.cfg.cluster_entry_radius) & (
-            torch.max(stacked_goal_distances, dim=1).values < self.cfg.agent_entry_radius
-        )
-        success_goal = (self.cluster_goal_distance < self.cfg.cluster_success_radius) & (
-            torch.max(stacked_goal_distances, dim=1).values < self.cfg.agent_goal_radius
-        )
-        if self.cfg.solo_pretraining:
+        if self.cfg.solo_pretraining and self.cfg.independent_agent_goals:
+            self.cluster_target_region_reached = torch.max(stacked_goal_distances, dim=1).values < self.cfg.solo_entry_radius
+            success_goal = torch.max(stacked_goal_distances, dim=1).values < self.cfg.solo_goal_radius
             success_compact = torch.ones_like(success_goal, dtype=torch.bool)
         else:
+            self.cluster_target_region_reached = (self.cluster_goal_distance < self.cfg.cluster_entry_radius) & (
+                torch.max(stacked_goal_distances, dim=1).values < self.cfg.agent_entry_radius
+            )
+            success_goal = (self.cluster_goal_distance < self.cfg.cluster_success_radius) & (
+                torch.max(stacked_goal_distances, dim=1).values < self.cfg.agent_goal_radius
+            )
             success_compact = (self.cluster_max_centroid_radius < self.cfg.success_max_centroid_radius) & (
                 self.cluster_max_pairwise_distance < self.cfg.success_max_pairwise_distance
             )
@@ -540,7 +559,7 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
 
     def _sample_spawn_and_goal(
         self, env_ids: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         sampled_indices = torch.zeros((len(env_ids),), dtype=torch.long, device=self.device)
         source_region_ids = torch.zeros((len(env_ids),), dtype=torch.long, device=self.device)
         target_region_ids = torch.zeros((len(env_ids),), dtype=torch.long, device=self.device)
@@ -548,6 +567,9 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
         spawn_centers = torch.zeros((len(env_ids), 3), dtype=torch.float32, device=self.device)
         goal_centers = torch.zeros((len(env_ids), 3), dtype=torch.float32, device=self.device)
         spawn_positions = torch.zeros(
+            (len(env_ids), self.num_agents_cfg, 3), dtype=torch.float32, device=self.device
+        )
+        goal_positions = torch.zeros(
             (len(env_ids), self.num_agents_cfg, 3), dtype=torch.float32, device=self.device
         )
 
@@ -566,8 +588,17 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
                     continue
 
                 cluster_points, center_point = cluster_sample
-                goal_idx = torch.randint(0, len(goal_region_points), (1,), device=self.device).item()
-                goal_centers[local_idx] = goal_region_points[goal_idx]
+                if self.cfg.independent_agent_goals:
+                    goal_cluster_sample = self._sample_cluster_points(goal_region_points, target_region_id)
+                    if goal_cluster_sample is None:
+                        continue
+                    goal_cluster_points, goal_center_point = goal_cluster_sample
+                    goal_positions[local_idx] = goal_cluster_points
+                    goal_centers[local_idx] = goal_center_point
+                else:
+                    goal_idx = torch.randint(0, len(goal_region_points), (1,), device=self.device).item()
+                    goal_centers[local_idx] = goal_region_points[goal_idx]
+                    goal_positions[local_idx] = goal_centers[local_idx].unsqueeze(0).repeat(self.num_agents_cfg, 1)
                 spawn_positions[local_idx] = cluster_points
                 spawn_centers[local_idx] = center_point
                 sampled_indices[local_idx] = pair_idx
@@ -579,7 +610,15 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
             if not sampled:
                 raise RuntimeError("Unable to sample a legal clustered five-drone spawn from any configured region pair.")
 
-        return source_region_ids, target_region_ids, sampled_indices, spawn_centers, goal_centers, spawn_positions
+        return (
+            source_region_ids,
+            target_region_ids,
+            sampled_indices,
+            spawn_centers,
+            goal_centers,
+            spawn_positions,
+            goal_positions,
+        )
 
     def _sample_cluster_points(
         self, region_points: torch.Tensor, source_region_id: int
