@@ -29,6 +29,7 @@ class DroneAccelAction(ActionTerm):
         self._action_dim = 3
         self._raw_actions = torch.zeros((self.num_envs, self._action_dim), device=self.device)
         self._processed_actions = torch.zeros_like(self._raw_actions)
+        self._preclipped_actions = torch.zeros_like(self._raw_actions)
         self._root_twist_command = torch.zeros((self.num_envs, 6), device=self.device)
         self._scale = torch.tensor(self.cfg.scale, device=self.device)
         self._offset = torch.tensor(self.cfg.offset, device=self.device)
@@ -71,6 +72,10 @@ class DroneAccelAction(ActionTerm):
     def processed_actions(self) -> torch.Tensor:
         return self._processed_actions
 
+    @property
+    def preclipped_actions(self) -> torch.Tensor:
+        return self._preclipped_actions
+
     def process_actions(self, actions: torch.Tensor):
         self._raw_actions[:] = actions
         if self.cfg.use_raw_actions:
@@ -86,6 +91,12 @@ class DroneAccelAction(ActionTerm):
             raise ValueError(f"Unknown policy distribution type: {self.cfg.policy_distr_type}")
 
         self._processed_actions[:] = self._processed_actions * self._scale
+        self._preclipped_actions[:] = self._processed_actions
+        self._processed_actions[:, :2] = torch.clamp(
+            self._processed_actions[:, :2],
+            min=-self.cfg.max_acceleration,
+            max=self.cfg.max_acceleration,
+        )
         self._desired_velocity_w.zero_()
         self._desired_velocity_w[:, :2] = self._asset.data.root_lin_vel_w[:, :2]
         self._clip_planar_speed_(self._desired_velocity_w)
@@ -99,7 +110,13 @@ class DroneAccelAction(ActionTerm):
         yaw_only_quat = yaw_quat(self._asset.data.root_quat_w)
         planar_acc_body = torch.zeros((self.num_envs, 3), device=self.device)
         planar_acc_body[:, :2] = self._processed_actions[:, :2]
-        return math_utils.quat_apply(yaw_only_quat, planar_acc_body)
+        planar_acc_world = math_utils.quat_apply(yaw_only_quat, planar_acc_body)
+        planar_acc_world[:, :2] = torch.clamp(
+            planar_acc_world[:, :2],
+            min=-self.cfg.max_acceleration,
+            max=self.cfg.max_acceleration,
+        )
+        return planar_acc_world
 
     def _initialize_desired_yaw(self, env_ids: torch.Tensor | None = None) -> None:
         if env_ids is None:
@@ -180,6 +197,7 @@ class DroneAccelAction(ActionTerm):
         if env_ids is None:
             self._raw_actions.zero_()
             self._processed_actions.zero_()
+            self._preclipped_actions.zero_()
             self._root_twist_command.zero_()
             self._desired_velocity_w.zero_()
             self._desired_acceleration_w.zero_()
@@ -197,6 +215,7 @@ class DroneAccelAction(ActionTerm):
 
         self._raw_actions[env_ids] = 0.0
         self._processed_actions[env_ids] = 0.0
+        self._preclipped_actions[env_ids] = 0.0
         self._root_twist_command[env_ids] = 0.0
         self._desired_velocity_w[env_ids] = 0.0
         self._desired_acceleration_w[env_ids] = 0.0
