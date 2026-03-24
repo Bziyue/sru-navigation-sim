@@ -269,6 +269,8 @@ class DroneSwarmNavigationEnvCfg_DEV(DroneSwarmNavigationEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 32
+        self.teammate_obs_scale_warmup_iters = 10
+        self.teammate_obs_scale_ramp_iters = 80
 
 
 @configclass
