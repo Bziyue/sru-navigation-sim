@@ -575,6 +575,7 @@ class StaticRegionGoalCommand(CommandTerm):
 
         self.metrics["velocity_toward_goal"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["velocity_magnitude"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["acceleration_magnitude"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["success_rate"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["active_guidance_assignments"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["active_guidance_unique"] = torch.zeros(self.num_envs, device=self.device)
@@ -794,6 +795,12 @@ class StaticRegionGoalCommand(CommandTerm):
         current_height = self.robot.data.root_pos_w[:, 2]
 
         self.metrics["velocity_magnitude"] = torch.norm(velocity_2d, dim=1)
+        action_term = self.env.action_manager.get_term("accel_command")
+        desired_acceleration = getattr(action_term, "_desired_acceleration_w", None)
+        if desired_acceleration is None:
+            self.metrics["acceleration_magnitude"].zero_()
+        else:
+            self.metrics["acceleration_magnitude"] = torch.norm(desired_acceleration[:, :2], dim=1)
         direction_to_goal = position_error_2d / torch.clamp(torch.norm(position_error_2d, dim=1, keepdim=True), min=1e-6)
         self.metrics["velocity_toward_goal"] = (velocity_2d * direction_to_goal).sum(dim=1)
         self.metrics["success_rate"] = self.success_tracker.get_success_rate()

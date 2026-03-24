@@ -124,7 +124,7 @@ class DroneCommandsCfg:
 class DroneActionsCfg:
     accel_command = mdp.DroneAccelActionCfg(
         asset_name="robot",
-        scale=[2.5, 2.5, 1.5, 0.15],
+        scale=[1.0, 1.0, 1.5, 0.15],
         offset=[0.0, 0.0, 0.0, 0.0],
         use_raw_actions=True,
         policy_distr_type="gaussian",
@@ -133,7 +133,8 @@ class DroneActionsCfg:
         min_height=0.5,
         max_height=2.0,
         body_name="body",
-        max_speed=2.5,
+        max_acceleration=1.0,
+        max_speed=1.0,
         use_controller=False,
         controller_decimation=2,
         controller_k_max_ang=30.0,
@@ -257,6 +258,11 @@ class DroneRewardsCfg:
             "activate_after_start_distance": 2.0,
             "release_goal_distance": 5.0,
         },
+    )
+    planar_acceleration = RewTerm(
+        func=mdp.planar_acceleration_penalty,
+        weight=-0.1,
+        params={"action_name": "accel_command", "threshold": 1.0},
     )
     guidance_progress = RewTerm(
         func=mdp.guidance_progress_reward,

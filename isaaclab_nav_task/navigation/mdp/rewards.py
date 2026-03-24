@@ -182,6 +182,18 @@ def backward_movement_penalty(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg 
     return backward_velocity
 
 
+def planar_acceleration_penalty(
+    env: ManagerBasedRLEnv,
+    action_name: str,
+    threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize only the planar acceleration command that exceeds the configured threshold."""
+    action_term = env.action_manager.get_term(action_name)
+    planar_acceleration = getattr(action_term, "preclipped_actions", action_term.processed_actions)[:, :2]
+    excess_acceleration = torch.clamp(torch.abs(planar_acceleration) - threshold, min=0.0)
+    return torch.mean(torch.clamp(excess_acceleration, max=1.0), dim=1)
+
+
 def guidance_progress_reward(
     env: ManagerBasedRLEnv,
     command_name: str,
