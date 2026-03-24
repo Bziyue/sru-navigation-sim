@@ -173,6 +173,10 @@ class DroneSwarmNavigationEnvCfg(DirectMARLEnvCfg):
     teammate_observation_radius: float = 6.0
     disable_teammate_observations: bool = False
     solo_pretraining: bool = False
+    teammate_obs_scale_min: float = 0.05
+    teammate_obs_scale_max: float = 1.0
+    teammate_obs_scale_warmup_iters: int = 50
+    teammate_obs_scale_ramp_iters: int = 800
 
     initial_formation_offsets_xy: tuple[tuple[float, float], ...] = (
         (0.0, 0.0),

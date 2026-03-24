@@ -83,6 +83,8 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
             self.cfg.initial_formation_offsets_xy, dtype=torch.float32, device=self.device
         )
         self.region_fallback_center_indices = self._build_region_fallback_center_indices()
+        self.current_training_iteration = 0
+        self.teammate_obs_curriculum_anchor_iter: int | None = None
 
         self._processed_actions = {
             agent: torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device) for agent in self.agent_ids
@@ -191,8 +193,51 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
             dim=1,
         )
 
+    def set_training_iteration(self, iteration: int) -> None:
+        self.current_training_iteration = max(int(iteration), 0)
+
+    def initialize_teammate_obs_curriculum(self, anchor_iteration: int | None = None) -> None:
+        if self.teammate_obs_curriculum_anchor_iter is None:
+            if anchor_iteration is None:
+                anchor_iteration = self.current_training_iteration
+            self.teammate_obs_curriculum_anchor_iter = max(int(anchor_iteration), 0)
+
+    def get_checkpoint_state(self) -> dict[str, int]:
+        return {
+            "teammate_obs_curriculum_anchor_iter": int(self.teammate_obs_curriculum_anchor_iter or 0),
+        }
+
+    def load_checkpoint_state(self, state: dict[str, int] | None) -> None:
+        if not state:
+            return
+        if "teammate_obs_curriculum_anchor_iter" in state:
+            self.teammate_obs_curriculum_anchor_iter = max(int(state["teammate_obs_curriculum_anchor_iter"]), 0)
+
+    def _get_teammate_obs_scale(self) -> float:
+        if self.cfg.disable_teammate_observations:
+            return 0.0
+
+        scale_min = float(self.cfg.teammate_obs_scale_min)
+        scale_max = float(self.cfg.teammate_obs_scale_max)
+        if scale_max <= scale_min:
+            return scale_max
+
+        warmup_iters = max(int(self.cfg.teammate_obs_scale_warmup_iters), 0)
+        ramp_iters = max(int(self.cfg.teammate_obs_scale_ramp_iters), 1)
+        anchor_iter = self.teammate_obs_curriculum_anchor_iter
+        if anchor_iter is None:
+            anchor_iter = self.current_training_iteration
+        curriculum_iter = max(self.current_training_iteration - anchor_iter, 0)
+
+        if curriculum_iter < warmup_iters:
+            return scale_min
+
+        progress = min(max((curriculum_iter - warmup_iters) / ramp_iters, 0.0), 1.0)
+        return scale_min + progress * (scale_max - scale_min)
+
     def _get_observations(self) -> dict[str, dict[str, torch.Tensor]]:
         self._update_common_buffers()
+        teammate_obs_scale = self._get_teammate_obs_scale()
         observations: dict[str, dict[str, torch.Tensor]] = {}
         for agent_idx, agent in enumerate(self.agent_ids):
             robot = self.robots[agent]
@@ -236,6 +281,8 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
             teammate_obs = teammate_feature_stack.reshape(self.num_envs, -1)
             if self.cfg.disable_teammate_observations:
                 teammate_obs = torch.zeros_like(teammate_obs)
+            else:
+                teammate_obs = teammate_obs * teammate_obs_scale
 
             proprio = torch.cat(
                 (
@@ -513,6 +560,7 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
                 "cluster_max_pairwise_distance": self.cluster_max_pairwise_distance.mean(),
                 "guidance_progress_delta": mean_progress_delta,
                 "guidance_lateral_error": mean_lateral_error,
+                "teammate_obs_scale": torch.tensor(self._get_teammate_obs_scale(), device=self.device),
             }
 
     def _build_terminal_log(self, terminal_mask: torch.Tensor, time_out: torch.Tensor) -> dict[str, torch.Tensor] | None:

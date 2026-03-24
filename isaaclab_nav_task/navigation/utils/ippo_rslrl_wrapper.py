@@ -52,6 +52,23 @@ class RslRlParameterSharingVecEnvWrapper(VecEnv):
     def seed(self, seed: int = -1) -> int:
         return self.env.unwrapped.seed(seed)
 
+    def set_training_iteration(self, iteration: int):
+        if hasattr(self.env.unwrapped, "set_training_iteration"):
+            self.env.unwrapped.set_training_iteration(iteration)
+
+    def initialize_teammate_obs_curriculum(self, anchor_iteration: int | None = None):
+        if hasattr(self.env.unwrapped, "initialize_teammate_obs_curriculum"):
+            self.env.unwrapped.initialize_teammate_obs_curriculum(anchor_iteration)
+
+    def get_checkpoint_state(self) -> dict | None:
+        if hasattr(self.env.unwrapped, "get_checkpoint_state"):
+            return self.env.unwrapped.get_checkpoint_state()
+        return None
+
+    def load_checkpoint_state(self, state: dict | None):
+        if hasattr(self.env.unwrapped, "load_checkpoint_state"):
+            self.env.unwrapped.load_checkpoint_state(state)
+
     def reset(self) -> tuple[TensorDict, dict]:
         obs, extras = self.env.reset()
         return self._flatten_obs(obs), self._flatten_extras(extras)
