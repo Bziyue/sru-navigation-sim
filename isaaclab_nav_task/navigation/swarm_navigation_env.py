@@ -174,6 +174,23 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
             robot.write_root_pose_to_sim(root_pose)
             robot.write_root_velocity_to_sim(root_velocity)
 
+    def _encode_teammate_features(
+        self, rel_pos_b: torch.Tensor, rel_vel_b: torch.Tensor, rel_dist: torch.Tensor, visible: torch.Tensor
+    ) -> torch.Tensor:
+        """Normalize teammate features into a bounded range before feeding the policy."""
+        pos_scale = max(float(self.cfg.teammate_observation_radius), 1e-6)
+        vel_scale = max(float(self.cfg.max_speed) * 2.0, 1e-6)
+        dist_scale = pos_scale
+
+        rel_pos_norm = torch.clamp(rel_pos_b / pos_scale, min=-1.0, max=1.0)
+        rel_vel_norm = torch.clamp(rel_vel_b / vel_scale, min=-1.0, max=1.0)
+        rel_dist_norm = torch.clamp(rel_dist / dist_scale, min=0.0, max=1.0)
+
+        return torch.cat(
+            (rel_pos_norm * visible, rel_vel_norm * visible, rel_dist_norm * visible, visible),
+            dim=1,
+        )
+
     def _get_observations(self) -> dict[str, dict[str, torch.Tensor]]:
         self._update_common_buffers()
         observations: dict[str, dict[str, torch.Tensor]] = {}
@@ -205,9 +222,7 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
                 rel_vel_b = quat_apply_inverse(own_yaw_quat, rel_vel_w)[:, :2]
                 rel_dist = torch.linalg.norm(rel_pos_w[:, :2], dim=1, keepdim=True)
                 visible = (rel_dist <= self.cfg.teammate_observation_radius).float()
-                teammate_features.append(
-                    torch.cat((rel_pos_b * visible, rel_vel_b * visible, rel_dist * visible, visible), dim=1)
-                )
+                teammate_features.append(self._encode_teammate_features(rel_pos_b, rel_vel_b, rel_dist, visible))
                 teammate_sort_keys.append(rel_dist.squeeze(1))
 
             teammate_feature_stack = torch.stack(teammate_features, dim=1)
