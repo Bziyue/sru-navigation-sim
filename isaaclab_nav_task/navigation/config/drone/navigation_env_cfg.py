@@ -415,6 +415,28 @@ class DroneStaticNavigationEnvCfg_SWARM_COMPAT(DroneStaticNavigationEnvCfg):
 
 
 @configclass
+class DroneStaticNavigationEnvCfg_SWARM_COMPAT_PLAY(DroneStaticNavigationEnvCfg_SWARM_COMPAT):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 1
+        self.commands.robot_goal.debug_vis = True
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DroneStaticNavigationEnvCfg_SWARM_COMPAT_PLAY_FAST(DroneStaticNavigationEnvCfg_SWARM_COMPAT):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 1
+        self.commands.robot_goal.debug_vis = False
+        self.commands.robot_goal.visualize_region_safe_points = False
+        self.commands.robot_goal.visualize_region_boxes = False
+        self.observations.policy.enable_corruption = False
+        # Render more frequently than the 5 Hz control loop so local playback looks smooth.
+        self.sim.render_interval = 4
+
+
+@configclass
 class DroneStaticNavigationEnvCfg_SWARM_COMPAT_DEV(DroneStaticNavigationEnvCfg_SWARM_COMPAT):
     def __post_init__(self):
         super().__post_init__()

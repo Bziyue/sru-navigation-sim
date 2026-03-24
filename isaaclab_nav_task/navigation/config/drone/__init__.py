@@ -55,6 +55,26 @@ gym.register(
 )
 
 gym.register(
+    id="Isaac-Nav-PPO-Drone-Static-SwarmCompat-Play-v0",
+    entry_point="isaaclab_nav_task.navigation:NavigationEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": navigation_env_cfg.DroneStaticNavigationEnvCfg_SWARM_COMPAT_PLAY,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_cfg.DroneStaticNavPPOCompatRunnerCfg,
+    },
+)
+
+gym.register(
+    id="Isaac-Nav-PPO-Drone-Static-SwarmCompat-PlayFast-v0",
+    entry_point="isaaclab_nav_task.navigation:NavigationEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": navigation_env_cfg.DroneStaticNavigationEnvCfg_SWARM_COMPAT_PLAY_FAST,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_cfg.DroneStaticNavPPOCompatRunnerCfg,
+    },
+)
+
+gym.register(
     id="Isaac-Nav-PPO-Drone-Static-SwarmCompat-Dev-v0",
     entry_point="isaaclab_nav_task.navigation:NavigationEnv",
     disable_env_checker=True,
