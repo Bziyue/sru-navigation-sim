@@ -305,3 +305,10 @@ class DroneSwarmNavigationEnvCfg_PLAY(DroneSwarmNavigationEnvCfg):
         super().__post_init__()
         self.scene.num_envs = 1
         self.sim.render_interval = 4
+        # The Isaac Lab defaults reserve a 640 MB rigid-contact GPU buffer upfront.
+        # For single-env swarm play on 8 GB cards, a smaller play-time capacity is sufficient.
+        self.sim.physx.gpu_max_rigid_contact_count = 2**20
+        self.sim.physx.gpu_max_rigid_patch_count = 2**18
+        self.sim.physx.gpu_found_lost_pairs_capacity = 2**19
+        self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 2**22
+        self.sim.physx.gpu_total_aggregate_pairs_capacity = 2**19
