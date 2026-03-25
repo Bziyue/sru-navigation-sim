@@ -86,6 +86,11 @@ class DroneAccelAction(ActionTerm):
             raise ValueError(f"Unknown policy distribution type: {self.cfg.policy_distr_type}")
 
         self._processed_actions[:] = self._processed_actions * self._scale
+        self._processed_actions[:, :2] = torch.clamp(
+            self._processed_actions[:, :2],
+            min=-self.cfg.max_acceleration,
+            max=self.cfg.max_acceleration,
+        )
         self._desired_velocity_w.zero_()
         self._desired_velocity_w[:, :2] = self._asset.data.root_lin_vel_w[:, :2]
         self._clip_planar_speed_(self._desired_velocity_w)
@@ -99,7 +104,13 @@ class DroneAccelAction(ActionTerm):
         yaw_only_quat = yaw_quat(self._asset.data.root_quat_w)
         planar_acc_body = torch.zeros((self.num_envs, 3), device=self.device)
         planar_acc_body[:, :2] = self._processed_actions[:, :2]
-        return math_utils.quat_apply(yaw_only_quat, planar_acc_body)
+        planar_acc_world = math_utils.quat_apply(yaw_only_quat, planar_acc_body)
+        planar_acc_world[:, :2] = torch.clamp(
+            planar_acc_world[:, :2],
+            min=-self.cfg.max_acceleration,
+            max=self.cfg.max_acceleration,
+        )
+        return planar_acc_world
 
     def _initialize_desired_yaw(self, env_ids: torch.Tensor | None = None) -> None:
         if env_ids is None:

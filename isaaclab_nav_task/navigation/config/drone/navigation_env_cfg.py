@@ -124,14 +124,15 @@ class DroneCommandsCfg:
 class DroneActionsCfg:
     accel_command = mdp.DroneAccelActionCfg(
         asset_name="robot",
-        scale=[2.5, 2.5, 1.5],
+        scale=[1.0, 1.0, 1.5],
         offset=[0.0, 0.0, 0.0],
         use_raw_actions=True,
         policy_distr_type="gaussian",
         target_height=1.2,
         body_name="body",
-        max_speed=2.5,
-        use_controller=False,
+        max_acceleration=1.0,
+        max_speed=1.0,
+        use_controller=True,
         controller_decimation=2,
         controller_k_max_ang=30.0,
     )
