@@ -29,6 +29,10 @@ class DroneAccelAction(ActionTerm):
         self._action_dim = 3
         self._raw_actions = torch.zeros((self.num_envs, self._action_dim), device=self.device)
         self._processed_actions = torch.zeros_like(self._raw_actions)
+        self._command_target_actions = torch.zeros_like(self._raw_actions)
+        self._delayed_actions = torch.zeros_like(self._raw_actions)
+        self._filtered_actions = torch.zeros_like(self._raw_actions)
+        self._applied_actions = torch.zeros_like(self._raw_actions)
         self._root_twist_command = torch.zeros((self.num_envs, 6), device=self.device)
         self._scale = torch.tensor(self.cfg.scale, device=self.device)
         self._offset = torch.tensor(self.cfg.offset, device=self.device)
@@ -41,6 +45,11 @@ class DroneAccelAction(ActionTerm):
         self._desired_yaw_rate = torch.zeros((self.num_envs, 1), device=self.device)
         self._yaw_initialized = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
         self._controller_counter = 0
+        self._execution_delay_steps = torch.zeros((self.num_envs,), dtype=torch.int, device=self.device)
+        self._delay_steps_remaining = torch.zeros_like(self._execution_delay_steps)
+        self._action_lag_blend = torch.ones((self.num_envs, 1), device=self.device)
+        self._execution_scale = torch.ones((self.num_envs, self._action_dim), device=self.device)
+        self._execution_bias = torch.zeros((self.num_envs, self._action_dim), device=self.device)
 
         if self.cfg.use_controller:
             self._body_id = self._asset.find_bodies(self.cfg.body_name)[0]
@@ -59,6 +68,8 @@ class DroneAccelAction(ActionTerm):
                 k_max_ang=self.cfg.controller_k_max_ang,
             )
 
+        self._randomize_execution_model(torch.arange(self.num_envs, device=self.device))
+
     @property
     def action_dim(self) -> int:
         return self._action_dim
@@ -70,6 +81,10 @@ class DroneAccelAction(ActionTerm):
     @property
     def processed_actions(self) -> torch.Tensor:
         return self._processed_actions
+
+    @property
+    def applied_actions(self) -> torch.Tensor:
+        return self._applied_actions
 
     def process_actions(self, actions: torch.Tensor):
         self._raw_actions[:] = actions
@@ -91,6 +106,12 @@ class DroneAccelAction(ActionTerm):
             min=-self.cfg.max_acceleration,
             max=self.cfg.max_acceleration,
         )
+        self._command_target_actions[:] = self._processed_actions
+        if self.cfg.enable_execution_delay:
+            self._delay_steps_remaining[:] = self._execution_delay_steps
+        else:
+            self._delay_steps_remaining.zero_()
+            self._delayed_actions[:] = self._command_target_actions
         self._desired_velocity_w.zero_()
         self._desired_velocity_w[:, :2] = self._asset.data.root_lin_vel_w[:, :2]
         self._clip_planar_speed_(self._desired_velocity_w)
@@ -100,10 +121,10 @@ class DroneAccelAction(ActionTerm):
         clip_scale = torch.clamp(speed_xy / self.cfg.max_speed, min=1.0)
         planar_velocity_w[:, :2] /= clip_scale
 
-    def _compute_planar_acceleration_world(self) -> torch.Tensor:
+    def _compute_planar_acceleration_world(self, planar_actions: torch.Tensor) -> torch.Tensor:
         yaw_only_quat = yaw_quat(self._asset.data.root_quat_w)
         planar_acc_body = torch.zeros((self.num_envs, 3), device=self.device)
-        planar_acc_body[:, :2] = self._processed_actions[:, :2]
+        planar_acc_body[:, :2] = planar_actions[:, :2]
         planar_acc_world = math_utils.quat_apply(yaw_only_quat, planar_acc_body)
         planar_acc_world[:, :2] = torch.clamp(
             planar_acc_world[:, :2],
@@ -111,6 +132,78 @@ class DroneAccelAction(ActionTerm):
             max=self.cfg.max_acceleration,
         )
         return planar_acc_world
+
+    def _sample_uniform_range(self, value_range: tuple[float, float], shape: tuple[int, ...]) -> torch.Tensor:
+        low, high = value_range
+        if high <= low:
+            return torch.full(shape, low, device=self.device)
+        return torch.rand(shape, device=self.device) * (high - low) + low
+
+    def _randomize_execution_model(self, env_ids: torch.Tensor) -> None:
+        if env_ids.numel() == 0:
+            return
+
+        if self.cfg.enable_execution_delay:
+            min_delay, max_delay = self.cfg.execution_delay_steps_range
+            if max_delay <= min_delay:
+                sampled_delay = torch.full((len(env_ids),), min_delay, dtype=torch.int, device=self.device)
+            else:
+                sampled_delay = torch.randint(min_delay, max_delay + 1, (len(env_ids),), dtype=torch.int, device=self.device)
+            self._execution_delay_steps[env_ids] = sampled_delay
+        else:
+            self._execution_delay_steps[env_ids] = 0
+
+        if self.cfg.enable_action_lag:
+            tau = self._sample_uniform_range(self.cfg.action_lag_time_constant_range_s, (len(env_ids), 1))
+            tau = torch.clamp(tau, min=self._physics_dt)
+            self._action_lag_blend[env_ids] = 1.0 - torch.exp(-self._physics_dt / tau)
+        else:
+            self._action_lag_blend[env_ids] = 1.0
+
+        self._execution_scale[env_ids, :2] = self._sample_uniform_range(
+            self.cfg.execution_scale_range_xy, (len(env_ids), 2)
+        )
+        self._execution_scale[env_ids, 2:3] = self._sample_uniform_range(
+            self.cfg.execution_scale_range_yaw, (len(env_ids), 1)
+        )
+        self._execution_bias[env_ids, :2] = self._sample_uniform_range(
+            self.cfg.execution_bias_range_xy, (len(env_ids), 2)
+        )
+        self._execution_bias[env_ids, 2:3] = self._sample_uniform_range(
+            self.cfg.execution_bias_range_yaw, (len(env_ids), 1)
+        )
+
+    def _update_delayed_actions(self) -> None:
+        if not self.cfg.enable_execution_delay:
+            self._delayed_actions[:] = self._command_target_actions
+            return
+
+        active_mask = self._delay_steps_remaining > 0
+        self._delay_steps_remaining[active_mask] -= 1
+        ready_mask = self._delay_steps_remaining == 0
+        self._delayed_actions[ready_mask] = self._command_target_actions[ready_mask]
+
+    def _apply_execution_model(self) -> None:
+        self._update_delayed_actions()
+
+        target_actions = self._delayed_actions * self._execution_scale + self._execution_bias
+        if self.cfg.enable_action_lag:
+            self._filtered_actions[:] = self._filtered_actions + self._action_lag_blend * (
+                target_actions - self._filtered_actions
+            )
+        else:
+            self._filtered_actions[:] = target_actions
+
+        noise_xy = self._sample_uniform_range(self.cfg.execution_noise_range_xy, (self.num_envs, 2))
+        noise_yaw = self._sample_uniform_range(self.cfg.execution_noise_range_yaw, (self.num_envs, 1))
+        self._applied_actions[:] = self._filtered_actions
+        self._applied_actions[:, :2] += noise_xy
+        self._applied_actions[:, 2:3] += noise_yaw
+        self._applied_actions[:, :2] = torch.clamp(
+            self._applied_actions[:, :2],
+            min=-self.cfg.max_acceleration,
+            max=self.cfg.max_acceleration,
+        )
 
     def _initialize_desired_yaw(self, env_ids: torch.Tensor | None = None) -> None:
         if env_ids is None:
@@ -125,11 +218,12 @@ class DroneAccelAction(ActionTerm):
 
     def _advance_desired_motion(self) -> None:
         self._initialize_desired_yaw()
+        self._apply_execution_model()
         self._desired_acceleration_w.zero_()
-        self._desired_acceleration_w[:] = self._compute_planar_acceleration_world()
+        self._desired_acceleration_w[:] = self._compute_planar_acceleration_world(self._applied_actions)
         self._desired_velocity_w[:, :2] += self._desired_acceleration_w[:, :2] * self._physics_dt
         self._clip_planar_speed_(self._desired_velocity_w)
-        self._desired_yaw_rate[:] = self._processed_actions[:, 2:3]
+        self._desired_yaw_rate[:] = self._applied_actions[:, 2:3]
         self._desired_yaw[:] = self._desired_yaw + self._desired_yaw_rate * self._physics_dt
 
     def apply_actions(self):
@@ -191,6 +285,10 @@ class DroneAccelAction(ActionTerm):
         if env_ids is None:
             self._raw_actions.zero_()
             self._processed_actions.zero_()
+            self._command_target_actions.zero_()
+            self._delayed_actions.zero_()
+            self._filtered_actions.zero_()
+            self._applied_actions.zero_()
             self._root_twist_command.zero_()
             self._desired_velocity_w.zero_()
             self._desired_acceleration_w.zero_()
@@ -200,6 +298,8 @@ class DroneAccelAction(ActionTerm):
             self._desired_yaw_rate.zero_()
             self._yaw_initialized.zero_()
             self._controller_counter = 0
+            self._delay_steps_remaining.zero_()
+            self._randomize_execution_model(torch.arange(self.num_envs, device=self.device))
             if self.cfg.use_controller:
                 self._root_force_command.zero_()
                 self._root_torque_command.zero_()
@@ -208,6 +308,10 @@ class DroneAccelAction(ActionTerm):
 
         self._raw_actions[env_ids] = 0.0
         self._processed_actions[env_ids] = 0.0
+        self._command_target_actions[env_ids] = 0.0
+        self._delayed_actions[env_ids] = 0.0
+        self._filtered_actions[env_ids] = 0.0
+        self._applied_actions[env_ids] = 0.0
         self._root_twist_command[env_ids] = 0.0
         self._desired_velocity_w[env_ids] = 0.0
         self._desired_acceleration_w[env_ids] = 0.0
@@ -216,6 +320,8 @@ class DroneAccelAction(ActionTerm):
         self._desired_yaw[env_ids] = 0.0
         self._desired_yaw_rate[env_ids] = 0.0
         self._yaw_initialized[env_ids] = False
+        self._delay_steps_remaining[env_ids] = 0
+        self._randomize_execution_model(env_ids)
         if self.cfg.use_controller:
             self._root_force_command[env_ids] = 0.0
             self._root_torque_command[env_ids] = 0.0
