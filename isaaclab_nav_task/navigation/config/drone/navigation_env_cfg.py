@@ -136,15 +136,15 @@ class DroneActionsCfg:
         controller_decimation=2,
         controller_k_max_ang=30.0,
         enable_execution_delay=True,
-        execution_delay_steps_range=(4, 8),
+        execution_delay_steps_range=(4, 6),
         enable_action_lag=True,
-        action_lag_time_constant_range_s=(0.06, 0.10),
-        execution_scale_range_xy=(0.95, 1.05),
-        execution_scale_range_yaw=(0.95, 1.05),
-        execution_bias_range_xy=(-0.03, 0.03),
-        execution_bias_range_yaw=(-0.03, 0.03),
-        execution_noise_range_xy=(-0.05, 0.05),
-        execution_noise_range_yaw=(-0.03, 0.03),
+        action_lag_time_constant_range_s=(0.04, 0.06),
+        execution_scale_range_xy=(0.98, 1.02),
+        execution_scale_range_yaw=(0.98, 1.02),
+        execution_bias_range_xy=(-0.02, 0.02),
+        execution_bias_range_yaw=(-0.015, 0.015),
+        execution_noise_range_xy=(-0.02, 0.02),
+        execution_noise_range_yaw=(-0.01, 0.01),
     )
 
 
