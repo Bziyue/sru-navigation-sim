@@ -159,7 +159,10 @@ class DroneSwarmNavigationEnv(DirectMARLEnv):
             wall_padding=self.cfg.boundary_wall_padding,
             hide_merged_mesh=True,
         )
-        light_cfg = sim_utils.DomeLightCfg(intensity=750.0, color=(0.75, 0.75, 0.75))
+        if self.cfg.use_dome_scene_light:
+            light_cfg = sim_utils.DomeLightCfg(intensity=750.0, color=(0.75, 0.75, 0.75))
+        else:
+            light_cfg = sim_utils.DistantLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: dict[str, torch.Tensor]):

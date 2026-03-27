@@ -83,9 +83,12 @@ import isaaclab_tasks  # noqa: F401
 import isaaclab_nav_task  # noqa: F401
 import isaaclab_nav_task.navigation.config.drone  # noqa: F401
 
-from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.envs import DirectMARLEnv, ManagerBasedRLEnvCfg
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper, export_policy_as_onnx
+
+from isaaclab_nav_task.navigation.utils.ippo_rslrl_wrapper import RslRlParameterSharingVecEnvWrapper
 
 
 PLAY_STATUS_INTERVAL = 20
@@ -297,7 +300,32 @@ def get_robot_goal_term(env):
     return getattr(env.unwrapped.command_manager, "_terms", {}).get("robot_goal")
 
 
+def is_multi_agent_env(env) -> bool:
+    return isinstance(env.unwrapped, DirectMARLEnv)
+
+
+def get_swarm_robot_positions(env) -> torch.Tensor:
+    base_env = env.unwrapped
+    positions = [base_env.robots[agent].data.root_pos_w[:, :3] for agent in base_env.agent_ids]
+    return torch.cat(positions, dim=0)
+
+
+def get_trail_anchor_position(env) -> torch.Tensor:
+    base_env = env.unwrapped
+    if is_multi_agent_env(env):
+        return base_env.cluster_centroid[0, :3].clone()
+    return base_env.scene["robot"].data.root_pos_w[0, :3].clone()
+
+
 def get_current_episode_signature(env) -> tuple[int, int, int, float, float]:
+    base_env = env.unwrapped
+    if is_multi_agent_env(env):
+        guidance_id = int(base_env.current_guidance_ids[0].detach().cpu().item())
+        spawn_region = int(base_env.source_region_ids[0].detach().cpu().item())
+        goal_region = int(base_env.target_region_ids[0].detach().cpu().item())
+        goal = base_env.cluster_goal_center[0].detach().cpu()
+        return (guidance_id, spawn_region, goal_region, round(float(goal[0]), 3), round(float(goal[1]), 3))
+
     command_term = get_robot_goal_term(env)
     if command_term is None:
         return (-1, -1, -1, 0.0, 0.0)
@@ -310,6 +338,23 @@ def get_current_episode_signature(env) -> tuple[int, int, int, float, float]:
 
 
 def get_guidance_path_points(env, max_points: int = 240) -> torch.Tensor | None:
+    base_env = env.unwrapped
+    if is_multi_agent_env(env):
+        guidance_id = int(base_env.current_guidance_ids[0].detach().cpu().item())
+        path_length = int(base_env.guidance_path_lengths[guidance_id].detach().cpu().item())
+        if path_length <= 0:
+            return None
+
+        path_xy = base_env.guidance_paths_xy[guidance_id, :path_length]
+        if path_length > max_points:
+            sample_idx = torch.linspace(0, path_length - 1, max_points, device=path_xy.device)
+            path_xy = path_xy[sample_idx.round().long()]
+
+        points = torch.zeros((len(path_xy), 3), dtype=torch.float32, device=path_xy.device)
+        points[:, :2] = path_xy
+        points[:, 2] = float(base_env.cfg.flight_height) + 0.06
+        return points
+
     command_term = get_robot_goal_term(env)
     if command_term is None:
         return None
@@ -331,6 +376,16 @@ def get_guidance_path_points(env, max_points: int = 240) -> torch.Tensor | None:
 
 
 def build_episode_static_points(env) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | tuple[None, None, None]:
+    base_env = env.unwrapped
+    if is_multi_agent_env(env):
+        spawn_center = base_env.cluster_spawn_center[0:1].clone()
+        spawn_center[:, 2] += 0.08
+        goal_center = base_env.cluster_goal_center[0:1].clone()
+        goal_center[:, 2] += 0.08
+        goal_point = base_env.agent_goal_positions[0].clone()
+        goal_point[:, 2] += 0.10
+        return spawn_center, goal_center, goal_point
+
     command_term = get_robot_goal_term(env)
     if command_term is None:
         return None, None, None
@@ -352,8 +407,11 @@ def build_episode_static_points(env) -> tuple[torch.Tensor, torch.Tensor, torch.
 
 
 def update_drone_debug_marker(marker: VisualizationMarkers, env):
-    robot = env.unwrapped.scene["robot"]
-    marker_pos = robot.data.root_pos_w[:, :3].clone()
+    if is_multi_agent_env(env):
+        marker_pos = get_swarm_robot_positions(env).clone()
+    else:
+        robot = env.unwrapped.scene["robot"]
+        marker_pos = robot.data.root_pos_w[:, :3].clone()
     marker_pos[:, 2] -= 0.12
     marker.visualize(translations=marker_pos)
 
@@ -371,47 +429,64 @@ def update_trail_marker(marker: VisualizationMarkers, trail_points: list[torch.T
 
 def print_play_status(env, step_count: int):
     base_env = env.unwrapped
-    robot = base_env.scene["robot"]
-    pos = robot.data.root_pos_w[0].detach().cpu()
-    vel = robot.data.root_lin_vel_w[0].detach().cpu()
-    yaw_rate = float(robot.data.root_ang_vel_b[0, 2].detach().cpu().item())
-
-    status = (
-        f"[PLAY step={step_count}] "
-        f"pos=({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}) "
-        f"vel=({vel[0]:.2f}, {vel[1]:.2f}, {vel[2]:.2f}) "
-        f"yaw_rate={yaw_rate:.2f}"
-    )
-
-    command_term = getattr(base_env.command_manager, "_terms", {}).get("robot_goal")
-    if command_term is not None:
-        goal = command_term.goal_position_world[0].detach().cpu()
-        distance_to_goal = float(command_term.distance_to_goal[0].detach().cpu().item())
-        guidance_progress = float(command_term.guidance_progress[0].detach().cpu().item())
-        guidance_lateral_error = float(command_term.guidance_lateral_error[0].detach().cpu().item())
-        spawn_region = int(command_term.spawn_region_ids[0].detach().cpu().item())
-        goal_region = int(command_term.goal_region_ids[0].detach().cpu().item())
-        status += (
-            f" goal=({goal[0]:.2f}, {goal[1]:.2f}, {goal[2]:.2f}) "
-            f"dist={distance_to_goal:.2f} "
-            f"guidance_s={guidance_progress:.2f} "
-            f"guidance_lat={guidance_lateral_error:.2f} "
-            f"regions={spawn_region}->{goal_region}"
+    if is_multi_agent_env(env):
+        centroid = base_env.cluster_centroid[0].detach().cpu()
+        goal = base_env.cluster_goal_center[0].detach().cpu()
+        distance_to_goal = float(base_env.cluster_goal_distance[0].detach().cpu().item())
+        max_pairwise = float(base_env.cluster_max_pairwise_distance[0].detach().cpu().item())
+        guidance_id = int(base_env.current_guidance_ids[0].detach().cpu().item())
+        spawn_region = int(base_env.source_region_ids[0].detach().cpu().item())
+        goal_region = int(base_env.target_region_ids[0].detach().cpu().item())
+        status = (
+            f"[PLAY step={step_count}] "
+            f"centroid=({centroid[0]:.2f}, {centroid[1]:.2f}, {centroid[2]:.2f}) "
+            f"goal=({goal[0]:.2f}, {goal[1]:.2f}, {goal[2]:.2f}) "
+            f"cluster_dist={distance_to_goal:.2f} "
+            f"max_pairwise={max_pairwise:.2f} "
+            f"regions={spawn_region}->{goal_region} "
+            f"guidance_id={guidance_id} "
+            f"entry={bool(base_env.all_agents_entry[0].item())} "
+            f"success={bool(base_env.all_agents_success[0].item())} "
+            f"collision={bool(base_env.cluster_collision[0].item())} "
+            f"contact={bool(base_env.cluster_contact[0].item())}"
         )
+    else:
+        robot = base_env.scene["robot"]
+        pos = robot.data.root_pos_w[0].detach().cpu()
+        vel = robot.data.root_lin_vel_w[0].detach().cpu()
+        yaw_rate = float(robot.data.root_ang_vel_b[0, 2].detach().cpu().item())
+
+        status = (
+            f"[PLAY step={step_count}] "
+            f"pos=({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}) "
+            f"vel=({vel[0]:.2f}, {vel[1]:.2f}, {vel[2]:.2f}) "
+            f"yaw_rate={yaw_rate:.2f}"
+        )
+
+        command_term = getattr(base_env.command_manager, "_terms", {}).get("robot_goal")
+        if command_term is not None:
+            goal = command_term.goal_position_world[0].detach().cpu()
+            distance_to_goal = float(command_term.distance_to_goal[0].detach().cpu().item())
+            guidance_progress = float(command_term.guidance_progress[0].detach().cpu().item())
+            guidance_lateral_error = float(command_term.guidance_lateral_error[0].detach().cpu().item())
+            spawn_region = int(command_term.spawn_region_ids[0].detach().cpu().item())
+            goal_region = int(command_term.goal_region_ids[0].detach().cpu().item())
+            status += (
+                f" goal=({goal[0]:.2f}, {goal[1]:.2f}, {goal[2]:.2f}) "
+                f"dist={distance_to_goal:.2f} "
+                f"guidance_s={guidance_progress:.2f} "
+                f"guidance_lat={guidance_lateral_error:.2f} "
+                f"regions={spawn_region}->{goal_region}"
+            )
 
     print(status, flush=True)
 
 
 def main():
     """Play navigation policy with RSL-RL."""
-    # Parse command-line arguments
-    spec = gym.spec(args_cli.task)
-    env_cfg_class = spec.kwargs.get("env_cfg_entry_point")
-    agent_cfg_class = spec.kwargs.get("rsl_rl_cfg_entry_point")
-
-    # Instantiate the configs
-    env_cfg: ManagerBasedRLEnvCfg = env_cfg_class()
-    agent_cfg: RslRlOnPolicyRunnerCfg = agent_cfg_class()
+    # Load the configurations from the registry.
+    env_cfg: ManagerBasedRLEnvCfg = load_cfg_from_registry(args_cli.task, "env_cfg_entry_point")
+    agent_cfg: RslRlOnPolicyRunnerCfg = load_cfg_from_registry(args_cli.task, "rsl_rl_cfg_entry_point")
 
     # Override config from command line
     if args_cli.num_envs is not None:
@@ -420,7 +495,10 @@ def main():
     # Create the environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
     # Wrap the environment
-    env = RslRlVecEnvWrapper(env)
+    if isinstance(env.unwrapped, DirectMARLEnv):
+        env = RslRlParameterSharingVecEnvWrapper(env)
+    else:
+        env = RslRlVecEnvWrapper(env)
 
     # Get checkpoint path
     if args_cli.checkpoint:
@@ -482,7 +560,7 @@ def main():
     obs = split_actor_observations(env.get_observations())
     update_drone_debug_marker(drone_marker, env)
     episode_signature = get_current_episode_signature(env)
-    current_pos = env.unwrapped.scene["robot"].data.root_pos_w[0, :3].clone()
+    current_pos = get_trail_anchor_position(env)
     current_pos[2] -= 0.02
     trail_points = [current_pos]
     update_trail_marker(trail_marker, trail_points)
@@ -512,7 +590,7 @@ def main():
         new_signature = get_current_episode_signature(env)
         if new_signature != episode_signature:
             episode_signature = new_signature
-            current_pos = env.unwrapped.scene["robot"].data.root_pos_w[0, :3].clone()
+            current_pos = get_trail_anchor_position(env)
             current_pos[2] -= 0.02
             trail_points = [current_pos]
             spawn_center, goal_center, goal_point = build_episode_static_points(env)
@@ -526,7 +604,7 @@ def main():
             if guidance_points is not None:
                 guidance_path_marker.visualize(translations=guidance_points)
         else:
-            current_pos = env.unwrapped.scene["robot"].data.root_pos_w[0, :3].clone()
+            current_pos = get_trail_anchor_position(env)
             current_pos[2] -= 0.02
             trail_points.append(current_pos)
 

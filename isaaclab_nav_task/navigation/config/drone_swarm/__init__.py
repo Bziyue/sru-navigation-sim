@@ -58,3 +58,14 @@ gym.register(
         "skrl_ippo_cfg_entry_point": f"{agents.__name__}:skrl_ippo_cfg.yaml",
     },
 )
+
+gym.register(
+    id="Isaac-Nav-IPPO-Drone-Swarm-Static-Solo-Play-v0",
+    entry_point="isaaclab_nav_task.navigation.swarm_navigation_env:DroneSwarmNavigationEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "isaaclab_nav_task.navigation.config.drone_swarm.swarm_env_cfg:DroneSwarmNavigationEnvCfg_SOLO_PLAY",
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_cfg.DroneSwarmNavIPPOSoloRunnerCfg,
+        "skrl_ippo_cfg_entry_point": f"{agents.__name__}:skrl_ippo_cfg.yaml",
+    },
+)

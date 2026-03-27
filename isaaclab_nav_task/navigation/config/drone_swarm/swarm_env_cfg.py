@@ -233,6 +233,7 @@ class DroneSwarmNavigationEnvCfg(DirectMARLEnvCfg):
     reward_overspeed_weight: float = 0.15
     reward_action_rate_weight: float = 0.05
     reward_teammate_proximity_weight: float = 2.0
+    use_dome_scene_light: bool = True
 
     def __post_init__(self):
         self.sim.disable_contact_processing = False
@@ -290,8 +291,22 @@ class DroneSwarmNavigationEnvCfg_SOLO_DEV(DroneSwarmNavigationEnvCfg_SOLO):
 
 
 @configclass
+class DroneSwarmNavigationEnvCfg_SOLO_PLAY(DroneSwarmNavigationEnvCfg_SOLO):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 1
+        self.sim.render_interval = 4
+        # Keep play mode lightweight on 8 GB GPUs by avoiding all sky-dome rendering.
+        self.scene.sky_light = None
+        self.use_dome_scene_light = False
+
+
+@configclass
 class DroneSwarmNavigationEnvCfg_PLAY(DroneSwarmNavigationEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 1
         self.sim.render_interval = 4
+        # Keep play mode lightweight on 8 GB GPUs by avoiding all sky-dome rendering.
+        self.scene.sky_light = None
+        self.use_dome_scene_light = False
